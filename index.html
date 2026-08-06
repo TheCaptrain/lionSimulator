@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Evolution Sim</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0f1114;
+        overflow: hidden;
+        font-family: sans-serif;
+      }
+
+      /* Unified UI Panel */
+      #ui-panel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        color: white;
+        background: rgba(0, 0, 0, 0.75);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #444;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 180px;
+        z-index: 10;
+      }
+
+      .ui-group {
+        border-bottom: 1px solid #333;
+        padding-bottom: 8px;
+      }
+
+      .ui-group:last-child {
+        border-bottom: none;
+      }
+
+      label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #aaa;
+      }
+
+      input[type="range"] {
+        width: 100%;
+        cursor: pointer;
+      }
+
+      button {
+        background: #444;
+        color: white;
+        border: none;
+        padding: 8px;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background 0.2s;
+      }
+
+      button:hover {
+        background: #666;
+      }
+
+      #killBtn {
+        background: #833;
+      }
+
+      #killBtn:hover {
+        background: #a44;
+      }
+
+      /* DNA Editor Panel */
+      #editor-panel {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 250px;
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 20px;
+        display: none;
+        height: 100vh;
+        border-left: 2px solid #444;
+        overflow-y: auto;
+        z-index: 20;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui-panel">
+      <div class="ui-group">
+        <div style="font-size: 18px; font-weight: bold; color: #4CAF50;">Lion Sim</div>
+        <div style="margin-top: 5px;">Population: <span id="pop-count">0</span></div>
+      </div>
+
+      <div class="ui-group">
+        <label for="master-speed">Sim Speed</label><br />
+        <input type="range" id="master-speed" min="0" max="2" step="0.01" value="0.1" />
+      </div>
+
+      <div class="ui-group">
+        <input type="checkbox" id="debug-toggle" />
+        <label for="debug-toggle" style="text-transform: none; color: white; cursor: pointer;">Show Targeting</label>
+      </div>
+
+      <!-- <div class="ui-group">
+        <button id="killBtn">KILL ALL AGENTS</button>
+      </div> -->
+    </div>
+
+    <div id="editor-panel">
+      <h3>Agent DNA Editor</h3>
+      <hr />
+      <div id="dynamic-sliders"></div>
+      <button id="close-editor">Close Editor</button>
+    </div>
+
+    <canvas id="simCanvas"></canvas>
+
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
