@@ -39,18 +39,17 @@ export const createDNA = (parent = null) => {
 
         let v = parent[key];
 
-        if (key === 'color') {
-            v = (v + (Math.random() * 20 - 10) + 360) % 360;
-        } else {
-            // 1. Determine mutation magnitude in "steps"
-            // We shift by +/- 0 to 3 steps (adjust 3 to change mutation rate)
-            const stepShift = (Math.random() * 6 - 3 + 0.5) | 0;
-            v += stepShift * r.step;
-        }
+        // 1. Determine mutation magnitude in "steps"
+        const stepShift = (Math.random() * 6 - 3 + 0.5) | 0;
+        v += stepShift * r.step;
 
-        // 2. Fast Clamp
-        if (v < r.min) v = r.min;
-        else if (v > r.max) v = r.max;
+        if (key === 'color') {
+            v = (v + 360) % 360;
+        } else {
+            // 2. Fast Clamp
+            if (v < r.min) v = r.min;
+            else if (v > r.max) v = r.max;
+        }
 
         offspringDNA[key] = v;
     }
