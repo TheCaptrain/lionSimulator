@@ -209,12 +209,18 @@ function update() {
 
     }
 
-    if (agent.energy <= 0 && !agent.isDead) {
-
-
-
-      agent.energy - 0.2;
+    if (agent.energy <= 20 && !agent.isDead) {
+      agent.hitPoints -= 0.01;
     }
+
+    if (agent.energy <= 5 && !agent.isDead) {
+      agent.hitPoints -= 0.03;
+    }
+
+    if (agent.energy >= 60 && !agent.isDead && agent.energy <= 120 ) {
+      agent.hitPoints += 0.01;
+    }
+
   });
 
   particles.forEach((p, index) => {

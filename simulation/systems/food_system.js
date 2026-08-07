@@ -22,7 +22,7 @@ export class FoodSystem {
         w: 1500,
         h: 1500,
         rate: 0.001, // How often it spawns
-        growthRate: 0.2, // How fast it grows
+        growthRate: 0.02, // How fast it grows
         maxSize: 100,
         nutrition: 50,
         label: "Japan",
@@ -33,7 +33,7 @@ export class FoodSystem {
         w: 1500,
         h: 1500,
         rate: 0.001, // How often it spawns
-        growthRate: 0.1, // How fast it grows
+        growthRate: 0.01, // How fast it grows
         maxSize: 100,
         nutrition: 20,
         label: "Ireland",
@@ -44,7 +44,7 @@ export class FoodSystem {
         w: 1500,
         h: 1500,
         rate: 0.001, // How often it spawns
-        growthRate: 0.1, // How fast it grows
+        growthRate: 0.01, // How fast it grows
         maxSize: 100,
         nutrition: 20,
         label: "Mexico",
@@ -55,7 +55,7 @@ export class FoodSystem {
         w: 1500,
         h: 1500,
         rate: 0.001, // How often it spawns
-        growthRate: 0.1, // How fast it grows
+        growthRate: 0.01, // How fast it grows
         maxSize: 100,
         nutrition: 20,
         label: "Alicante",
