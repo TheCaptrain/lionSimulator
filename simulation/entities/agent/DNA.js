@@ -4,8 +4,8 @@
 // This is used by the UI to build sliders and the mutation logic to clamp values.
 export const DNA_BLUEPRINT = {
     max_age:      { min: 0,   max: 100,  step: 1,   label: "Max Age" },
-    color:      { min: 0,   max: 360,  step: 1,   label: "Color (Hue)" },
-    kin_recogn: { min: 1,   max: 180,  step: 1,   label: "Kin Recognition" },
+    color:      { min: 0,   max: 360,  step: 10,   label: "Color (Hue)" },
+    kin_recogn: { min: 1,   max: 180,  step: 5,   label: "Kin Recognition" },
     size:       { min: 0.2, max: 5.0,  step: 0.1, label: "Physical Size" },
     speed:      { min: 0.1, max: 5.0,  step: 0.1, label: "Movement Speed" },
     foodSizePreference: { min: -10, max: 100, step: 1, label: "Min Food Size" },

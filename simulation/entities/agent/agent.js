@@ -7,6 +7,7 @@ export class Agent {
     this.pos = { x, y };
     this.dna = dna;
     this.energy = 100; // Starting energy
+    this.hitPoints = 100; // Starting energy
     this.maxEnergy = 200;
     this.radius = 10;
     this.pos = new Vector(x, y);
@@ -14,7 +15,6 @@ export class Agent {
     this.acc = new Vector(0, 0);
     this.heading = Math.random() * Math.PI * 2;
 
-    // Constants ported from your python class
     this.MAX_TURN_RATE = 0.05;
     this.FRICTION = 0.95;
     this.WALL_BOUNCE_FORCE = 0.5;
@@ -299,9 +299,9 @@ export class Agent {
 
     // Return the new child with the mutated DNA
     return new Agent(
-      this.pos.x + (Math.random() * 20 - 10),
-      this.pos.y + (Math.random() * 20 - 10),
-      offspringDNA // Pass the whole DNA object
+      this.pos.x + 10,
+      this.pos.y,
+      offspringDNA
     );
   }
 
@@ -490,9 +490,9 @@ export class Agent {
     // We add a small 'reach' buffer (e.g., 5px)
     if (distFromMouth < target.radius + 5) {
       const damage = 20.5;
+      target.hitPoints -= damage;
       target.energy -= damage;
-      this.energy = Math.min(this.maxEnergy, this.energy + damage * 0.7);
-
+      this.energy = Math.max(0, this.energy - damage * 0.2);
       // Knockback physics using the collision angle
       const angle = Math.atan2(dy, dx);
       const impactStrength = 1.5;

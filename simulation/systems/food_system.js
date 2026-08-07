@@ -1,6 +1,6 @@
 // simulation/systems/food_system.js
 import { Food } from "../entities/food/food.js";
-import { c } from "../../constants.js"; // Adjust the path to match your project structure
+import { c } from "../../constants.js"; 
 
 // simulation/systems/food_systems.js (Add this at the top or bottom)
 export const ZONE_BLUEPRINT = {

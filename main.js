@@ -20,14 +20,14 @@ const townLayout = [];
 function generateTownLayout() {
   const cellSize = 400;
   const padding = 100;
-  
+
   for (let x = 0; x < c.WORLD_WIDTH; x += cellSize) {
     for (let y = 0; y < c.WORLD_HEIGHT; y += cellSize) {
       if (Math.random() > 0.3) {
         // Variety: Randomize building type and vibrant colors
         const hue = Math.floor(Math.random() * 360);
-        const type = Math.random() > 0.5 ? 'rect' : 'complex';
-        
+        const type = Math.random() > 0.5 ? "rect" : "complex";
+
         townLayout.push({
           x: x + padding / 2,
           y: y + padding / 2,
@@ -37,25 +37,22 @@ function generateTownLayout() {
           roofColor: `hsl(${hue}, 50%, 20%)`,
           windowColor: `hsla(${(hue + 40) % 360}, 100%, 70%, 0.3)`,
           type: type,
-          offset: Math.random() * 15 // For a slight 3D perspective effect
+          offset: Math.random() * 15, // For a slight 3D perspective effect
         });
       }
     }
   }
 }
 
-
-
-const jumpSound = new Audio('sounds/jump.mp3');
+const jumpSound = new Audio("sounds/jump.mp3");
 
 // To play the sound
 jumpSound.play();
 
 // To loop background music
-const bgMusic = new Audio('./assets/Jaws-theme-song/Jaws-theme-song.mp3');
+const bgMusic = new Audio("./assets/Jaws-theme-song/Jaws-theme-song.mp3");
 bgMusic.loop = true;
 bgMusic.play();
-
 
 // Call this in your init()
 
@@ -102,8 +99,13 @@ function drawTown(ctx) {
 
       // Sidewalks (Light Gray) - creates the "blocks"
       ctx.fillStyle = "#333";
-      ctx.fillRect(x + roadWidth/2, y + roadWidth/2, cellSize - roadWidth, cellSize - roadWidth);
-      
+      ctx.fillRect(
+        x + roadWidth / 2,
+        y + roadWidth / 2,
+        cellSize - roadWidth,
+        cellSize - roadWidth
+      );
+
       // Road Markings (Dashed Lines)
       ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
       ctx.setLineDash([20, 20]);
@@ -114,16 +116,16 @@ function drawTown(ctx) {
   }
 
   // 2. Draw Buildings (Existing logic)
-  townLayout.forEach(b => {
+  townLayout.forEach((b) => {
     ctx.save();
-    
+
     // Shadow
     ctx.fillStyle = "rgba(0,0,0,0.3)";
     ctx.fillRect(b.x + 8, b.y + 8, b.w, b.h);
 
     // Main Facade
     ctx.fillStyle = b.color;
-    if (b.type === 'complex') {
+    if (b.type === "complex") {
       ctx.beginPath();
       ctx.moveTo(b.x, b.y);
       ctx.lineTo(b.x + b.w, b.y);
@@ -139,8 +141,8 @@ function drawTown(ctx) {
 
     // Roof
     ctx.fillStyle = b.roofColor;
-    const rP = 15; 
-    if (b.type === 'complex') {
+    const rP = 15;
+    if (b.type === "complex") {
       ctx.beginPath();
       ctx.moveTo(b.x + rP, b.y + rP);
       ctx.lineTo(b.x + b.w - rP, b.y + rP);
@@ -158,8 +160,8 @@ function drawTown(ctx) {
     ctx.fillStyle = b.windowColor;
     for (let wx = b.x + 25; wx < b.x + b.w - 25; wx += 40) {
       for (let wy = b.y + 25; wy < b.y + b.h - 25; wy += 40) {
-        if (b.type === 'rect' || ctx.isPointInPath(wx, wy)) {
-           ctx.fillRect(wx, wy, 10, 10);
+        if (b.type === "rect" || ctx.isPointInPath(wx, wy)) {
+          ctx.fillRect(wx, wy, 10, 10);
         }
       }
     }
@@ -192,20 +194,27 @@ function update() {
       agent.didHaveOffspring = false; // Reset the flag
     }
 
-    if (agent.energy <= 0 && !agent.isDead) {
+    if (agent.hitPoints <= 0 && !agent.isDead) {
       particles.push(new BloodParticle(agent.pos.x, agent.pos.y, true));
-      
+
       foodSystem.spawnMeat(
-          agent.pos.x, 
-          agent.pos.y, 
-          agent.maxEnergy * 0.5, 
-          agent.dna.color, 
-          agent.heading,
-          agent.radius // Passing size here
+        agent.pos.x,
+        agent.pos.y,
+        agent.energy + 30,
+        agent.dna.color,
+        agent.heading,
+        agent.radius // Passing size here
       );
-      
       agent.isDead = true;
-  }
+
+    }
+
+    if (agent.energy <= 0 && !agent.isDead) {
+
+
+
+      agent.energy - 0.2;
+    }
   });
 
   particles.forEach((p, index) => {
@@ -249,13 +258,17 @@ function draw() {
   drawTown(ctx);
 
   // --- ENTITY LAYER ---
-  particles.forEach((p) => { if (p.isPool) p.draw(ctx); });
+  particles.forEach((p) => {
+    if (p.isPool) p.draw(ctx);
+  });
   foodSystem.draw(ctx);
   agents.forEach((agent) => {
     if (!agent || !agent.dna) return;
     agent.draw(ctx, agent === selectedAgent);
   });
-  particles.forEach((p) => { if (!p.isPool) p.draw(ctx); });
+  particles.forEach((p) => {
+    if (!p.isPool) p.draw(ctx);
+  });
 
   ctx.restore();
 }
