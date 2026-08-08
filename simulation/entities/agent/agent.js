@@ -11,143 +11,32 @@ export class Agent {
     this.dna = dna || DNA.createDNA();
     if (!this.dna) console.error("DNA failed to initialize!");
 
+    // Vital Stats
     this.energy = 100;
-    this.hitPoints = 100;
     this.maxEnergy = 200;
-    this.heading = Math.random() * Math.PI * 2;
+    this.hitPoints = 100;
+    this.age = 0;
+    this.isDead = false;
 
+    // Movement & DNA Expressed Attributes
+    this.heading = Math.random() * Math.PI * 2;
+    this.maxSpeed = c.SPEED_MAP[this.dna.speed_label] ?? this.dna.speed ?? 2.5;
+    this.radius = c.BASE_AGENT_RADIUS * (c.SIZE_MAP[this.dna.size_label] ?? 1.0);
+    this.sensingRange = this.dna.sensingRange ?? 200;
+
+    // Movement Constants & Variance
     this.MAX_TURN_RATE = 0.05;
     this.FRICTION = 0.95;
-    this.WALL_BOUNCE_FORCE = 0.5;
-    this.WALL_MARGIN = 30;
 
-    this.behaviorTimer = 0;
+    // Behavior & State
     this.currentState = "WANDERING";
+    this.behaviorTimer = 0;
+    this.targetPosition = null;
 
+    // Reproduction
     this.reproductionPoints = 0;
     this.reproductionThreshold = 900;
-
-    this.max_speed = c.SPEED_MAP[this.dna.speed_label] || 2.5;
-    this.radius = c.BASE_AGENT_RADIUS * (c.SIZE_MAP[this.dna.size_label] || 1.0);
-    this.sensingRange = this.dna.sensingRange;
-    this.maxSpeed = this.dna.speed;
-  }
-
-  _seek(targetPos) {
-    const dt = c.SIM_SPEED;
-    const dx = targetPos.x - this.pos.x;
-    const dy = targetPos.y - this.pos.y;
-    const angleToFood = Math.atan2(dy, dx);
-
-    let diff = angleToFood - this.heading;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-
-    const turnSpeed = 0.1 * dt;
-    if (Math.abs(diff) > turnSpeed) {
-      this.heading += diff > 0 ? turnSpeed : -turnSpeed;
-    } else {
-      this.heading = angleToFood;
-    }
-
-    this.acc.x += Math.cos(this.heading) * 0.2 * dt;
-    this.acc.y += Math.sin(this.heading) * 0.2 * dt;
-  }
-
-  _separate(agents) {
-    const dt = c.SIM_SPEED;
-    let perception = this.radius * 1.5;
-    let steer = { x: 0, y: 0 };
-    let count = 0;
-
-    for (let other of agents) {
-      if (other === this) continue;
-
-      let dx = this.pos.x - other.pos.x;
-      let dy = this.pos.y - other.pos.y;
-      let d = Math.sqrt(dx * dx + dy * dy);
-
-      if (d < perception && d > 0) {
-        let diffX = dx / d;
-        let diffY = dy / d;
-        steer.x += diffX / d;
-        steer.y += diffY / d;
-        count++;
-      }
-    }
-
-    if (count > 0) {
-      steer.x /= count;
-      steer.y /= count;
-
-      let mag = Math.sqrt(steer.x * steer.x + steer.y * steer.y);
-      if (mag > 0) {
-        steer.x = (steer.x / mag) * this.max_speed;
-        steer.y = (steer.y / mag) * this.max_speed;
-
-        let steerForceX = steer.x - this.vel.x;
-        let steerForceY = steer.y - this.vel.y;
-
-        this.acc.x += steerForceX * 1.5 * dt;
-        this.acc.y += steerForceY * 1.5 * dt;
-      }
-    }
-  }
-
-  findFood(foods) {
-    if (!foods || foods.length === 0) return;
-    if (this.energy / this.maxEnergy > (this.dna.hungerThreshold ?? 0.8)) return;
-
-    const dt = c.SIM_SPEED;
-    let closest = null;
-    let record = Infinity;
-    const range = this.sensingRange ?? 200;
-    const viewDistSq = range * range;
-
-    for (let food of foods) {
-      if (food.isEaten || food.isSkeleton) continue;
-      let dx = food.pos.x - this.pos.x;
-      let dy = food.pos.y - this.pos.y;
-      let dSq = dx * dx + dy * dy;
-
-      if (dSq > viewDistSq) continue;
-
-      let d = Math.sqrt(dSq);
-      if (d < this.radius + food.radius) {
-        const bite = 0.2 * dt;
-        if (food.nutritionValue > bite) {
-          food.nutritionValue -= bite;
-          this.energy += bite;
-          this.vel.x *= 0.8;
-          this.vel.y *= 0.8;
-        } else {
-          this.energy += food.nutritionValue;
-          food.nutritionValue = 0;
-          if (food.type === "plant") {
-            food.isEaten = true;
-          }
-        }
-
-        if (this.energy > this.maxEnergy) this.energy = this.maxEnergy;
-
-        this.acc.x = 0;
-        this.acc.y = 0;
-        this.targetPosition = food.pos;
-        return;
-      }
-
-      if (dSq < record) {
-        record = dSq;
-        closest = food;
-      }
-    }
-
-    if (closest) {
-      this.targetPosition = closest.pos;
-      this._seek(closest.pos);
-    } else {
-      this.targetPosition = null;
-    }
+    this.didHaveOffspring = false;
   }
 
   update(foods, agents) {
@@ -156,13 +45,77 @@ export class Agent {
 
     this._separate(agents);
     this._handleMetabolism();
-
     this._manageBrain(foods, agents);
-
     this._handleReproduction(agents);
     this._applyPhysics();
     this._smoothRotate();
   }
+
+  die() {
+    this.isDead = true;
+  }
+
+  identifyRelationship(otherAgent) {
+    const diff = Math.abs(this.dna.color - otherAgent.dna.color);
+    const colorDistance = diff > 180 ? 360 - diff : diff;
+    return colorDistance <= (this.dna.kin_recognition ?? 15) ? "Family" : "Stranger";
+  }
+
+  findFood(foods) {
+    if (!foods?.length) return;
+    if (this.energy / this.maxEnergy > (this.dna.hungerThreshold ?? 0.8)) return;
+
+    const dt = c.SIM_SPEED;
+    const viewDistSq = this.sensingRange ** 2;
+    let closestFood = null;
+    let closestDistSq = Infinity;
+
+    for (const food of foods) {
+      if (food.isEaten || food.isSkeleton) continue;
+
+      const dx = food.pos.x - this.pos.x;
+      const dy = food.pos.y - this.pos.y;
+      const distSq = dx * dx + dy * dy;
+
+      if (distSq > viewDistSq) continue;
+
+      // Handle Eating Range
+      if (Math.sqrt(distSq) < this.radius + food.radius) {
+        const bite = 0.2 * dt;
+
+        if (food.nutritionValue > bite) {
+          food.nutritionValue -= bite;
+          this.energy += bite;
+          this.vel.x *= 0.8;
+          this.vel.y *= 0.8;
+        } else {
+          this.energy += food.nutritionValue;
+          food.nutritionValue = 0;
+          if (food.type === "plant") food.isEaten = true;
+        }
+
+        this.energy = Math.min(this.energy, this.maxEnergy);
+        this.acc.x = 0;
+        this.acc.y = 0;
+        this.targetPosition = food.pos;
+        return;
+      }
+
+      if (distSq < closestDistSq) {
+        closestDistSq = distSq;
+        closestFood = food;
+      }
+    }
+
+    if (closestFood) {
+      this.targetPosition = closestFood.pos;
+      this._seek(closestFood.pos);
+    } else {
+      this.targetPosition = null;
+    }
+  }
+
+  // --- Internal Behavior & Perception ---
 
   _manageBrain(foods, agents) {
     const dt = c.SIM_SPEED;
@@ -182,7 +135,7 @@ export class Agent {
     } else if (this._checkCombat(agents)) {
       this.currentState = "ATTACKING";
       this.behaviorTimer = 40;
-    } else if (this.energy / this.maxEnergy < this.dna.hungerThreshold) {
+    } else if (this.energy / this.maxEnergy < (this.dna.hungerThreshold ?? 0.8)) {
       this.currentState = "EATING";
       this.findFood(foods);
       this.behaviorTimer = 10;
@@ -193,187 +146,71 @@ export class Agent {
     }
   }
 
-  _handleMetabolism() {
-    const SECONDS_PER_UNIT = 6;
-    const framesPerSecond = 60;
+  _getNearbyAgents(agents) {
+    const visionRange = this.dna.agentVisionRange ?? 150;
+    const visionRangeSq = visionRange ** 2;
+    const kinSensitivity = this.dna.kin_recogn ?? 15;
 
-    const timeDelta = (1 / framesPerSecond) * c.SIM_SPEED;
+    let enemies = [];
+    let familyCount = 0;
 
-    const agingRate = timeDelta / SECONDS_PER_UNIT;
-    this.age = (this.age || 0) + agingRate;
+    for (const other of agents) {
+      if (other === this || other.isDead) continue;
 
-    const baseRate = (this.dna.metabolism || 0.5) * timeDelta;
-    const movementCost = this.vel.mag() * 0.02 * c.SIM_SPEED;
-    this.energy -= baseRate + movementCost;
+      const dx = other.pos.x - this.pos.x;
+      const dy = other.pos.y - this.pos.y;
+      const distSq = dx * dx + dy * dy;
 
-    if (this.age >= (this.dna.max_age || 100)) {
-      this.energy = 0;
-    }
-
-    if (this.energy <= 0) {
-      this.energy = 0;
-    }
-  }
-
-  die() {
-    this.isDead = true;
-  }
-
-  identifyRelationship(otherAgent) {
-    let diff = Math.abs(this.dna.color - otherAgent.dna.color);
-    let colorDistance = diff > 180 ? 360 - diff : diff;
-
-    if (colorDistance <= this.dna.kin_recognition) {
-      return "Family";
-    } else {
-      return "Stranger";
-    }
-  }
-
-  _handleReproduction(agents) {
-    const dt = c.SIM_SPEED;
-
-    if (this.energy > 100) {
-      this.reproductionPoints += 1 * dt;
-    } else if (this.energy < 50) {
-      this.reproductionPoints = Math.max(0, this.reproductionPoints - 1 * dt);
-    }
-
-    if (this.reproductionPoints >= this.reproductionThreshold) {
-      this.reproductionPoints = 0;
-      this.energy -= 10;
-
-      const child = this._birth();
-      agents.push(child);
-      this.didHaveOffspring = true;
-      console.log(`[${this.id}] New agent born!`);
-    }
-  }
-
-  _birth() {
-    const offspringDNA = DNA.createDNA(this.dna);
-    return new Agent(this.pos.x + 20, this.pos.y, offspringDNA);
-  }
-
-  _updateBehavior(agents) {
-    const dt = c.SIM_SPEED;
-
-    if (this.behaviorTimer > 0) {
-      this.behaviorTimer -= dt;
-
-      if (this.currentState === "ATTACKING") this._checkCombat(agents);
-      if (this.currentState === "FLEEING") this._checkFlee(agents);
-      return;
-    }
-
-    if (this._checkFlee(agents)) {
-      this.currentState = "FLEEING";
-      this.behaviorTimer = Math.floor(Math.random() * 60) + 30;
-    } else if (this._checkCombat(agents)) {
-      this.currentState = "ATTACKING";
-      this.behaviorTimer = Math.floor(Math.random() * 40) + 20;
-    } else {
-      this.currentState = "WANDERING";
-      this.behaviorTimer = 10;
-      this._wander();
-    }
-  }
-
-  _checkFlee(agents) {
-    const agentDetectionVisionRadius = this.dna.agentVisionRange ?? 150;
-    const fleefullnessTrait = this.dna.fleefullness ?? 0.5;
-    const kinRecognitionSensitivity = this.dna.kin_recogn ?? 15;
-
-    let nearbyDetectedEnemies = [];
-    let localFamilyMemberCount = 0;
-
-    for (let otherAgent of agents) {
-      if (otherAgent === this || otherAgent.isDead) continue;
-
-      const deltaX = otherAgent.pos.x - this.pos.x;
-      const deltaY = otherAgent.pos.y - this.pos.y;
-      const distanceToAgentSquared = deltaX * deltaX + deltaY * deltaY;
-
-      if (distanceToAgentSquared < agentDetectionVisionRadius * agentDetectionVisionRadius) {
-        const geneticColorDifference = Math.abs(this.dna.color - otherAgent.dna.color);
-
-        if (geneticColorDifference < kinRecognitionSensitivity) {
-          localFamilyMemberCount++;
+      if (distSq < visionRangeSq) {
+        const isKin = Math.abs(this.dna.color - other.dna.color) < kinSensitivity;
+        if (isKin) {
+          familyCount++;
         } else {
-          nearbyDetectedEnemies.push({
-            target: otherAgent,
-            distSq: distanceToAgentSquared,
-          });
+          enemies.push({ target: other, distSq });
         }
       }
     }
 
-    if (nearbyDetectedEnemies.length > 0) {
-      nearbyDetectedEnemies.sort((a, b) => a.distSq - b.distSq);
-      const closestThreat = nearbyDetectedEnemies[0].target;
-      const enemyDensity = nearbyDetectedEnemies.length;
+    enemies.sort((a, b) => a.distSq - b.distSq);
+    return { enemies, familyCount };
+  }
 
-      const fearScore = enemyDensity * fleefullnessTrait - localFamilyMemberCount * 0.1;
+  _checkFlee(agents) {
+    const { enemies, familyCount } = this._getNearbyAgents(agents);
+    if (!enemies.length) return false;
 
-      if (fearScore > 0.6) {
-        const escapeVector = {
-          x: this.pos.x - (closestThreat.pos.x - this.pos.x),
-          y: this.pos.y - (closestThreat.pos.y - this.pos.y),
-        };
+    const fearfulness = this.dna.fleefullness ?? 0.5;
+    const fearScore = enemies.length * fearfulness - familyCount * 0.1;
 
-        this.targetPosition = escapeVector;
-        this._seek(escapeVector);
-        return true;
-      }
+    if (fearScore > 0.6) {
+      const closestThreat = enemies[0].target;
+      const escapeVector = {
+        x: this.pos.x - (closestThreat.pos.x - this.pos.x),
+        y: this.pos.y - (closestThreat.pos.y - this.pos.y),
+      };
+
+      this.targetPosition = escapeVector;
+      this._seek(escapeVector);
+      return true;
     }
 
     return false;
   }
 
   _checkCombat(agents) {
-    const agentDetectionVisionRadius = this.dna.agentVisionRange || 150;
-    const baseAggressionTrait = this.dna.aggression || 0.5;
-    const kinRecognitionSensitivity = this.dna.kin_recogn || 15;
+    const { enemies, familyCount } = this._getNearbyAgents(agents);
+    if (!enemies.length) return false;
 
-    let nearbyDetectedEnemies = [];
-    let localFamilyMemberCount = 0;
+    const aggression = this.dna.aggression ?? 0.5;
+    const combatConfidence = aggression + familyCount * 0.1 - enemies.length * 0.05;
 
-    for (let otherAgent of agents) {
-      if (otherAgent === this || otherAgent.isDead) continue;
-
-      const deltaX = otherAgent.pos.x - this.pos.x;
-      const deltaY = otherAgent.pos.y - this.pos.y;
-      const distanceToAgentSquared = deltaX * deltaX + deltaY * deltaY;
-
-      if (distanceToAgentSquared < agentDetectionVisionRadius * agentDetectionVisionRadius) {
-        const geneticColorDifference = Math.abs(this.dna.color - otherAgent.dna.color);
-
-        if (geneticColorDifference < kinRecognitionSensitivity) {
-          localFamilyMemberCount++;
-        } else {
-          nearbyDetectedEnemies.push({
-            target: otherAgent,
-            distSq: distanceToAgentSquared,
-          });
-        }
-      }
-    }
-
-    if (nearbyDetectedEnemies.length > 0) {
-      nearbyDetectedEnemies.sort((a, b) => a.distSq - b.distSq);
-      const closestThreat = nearbyDetectedEnemies[0].target;
-      const enemyDensity = nearbyDetectedEnemies.length;
-
-      const combatConfidenceScore =
-        baseAggressionTrait + localFamilyMemberCount * 0.1 - enemyDensity * 0.05;
-
-      if (combatConfidenceScore > 0.4) {
-        this.currentState = "ATTACKING";
-        this.targetPosition = closestThreat.pos;
-        this._seek(closestThreat.pos);
-        this._resolveAttack(closestThreat);
-        return true;
-      }
+    if (combatConfidence > 0.4) {
+      const closestThreat = enemies[0].target;
+      this.currentState = "ATTACKING";
+      this.targetPosition = closestThreat.pos;
+      this._seek(closestThreat.pos);
+      this._resolveAttack(closestThreat);
+      return true;
     }
 
     return false;
@@ -381,14 +218,14 @@ export class Agent {
 
   _resolveAttack(target) {
     const dt = c.SIM_SPEED;
-    const speed = Math.sqrt(this.vel.x ** 2 + this.vel.y ** 2);
+    const speed = this.vel.mag();
     if (speed < 0.1) return;
 
-    const fx = this.vel.x / speed;
-    const fy = this.vel.y / speed;
+    const dirX = this.vel.x / speed;
+    const dirY = this.vel.y / speed;
 
-    const mouthX = this.pos.x + fx * this.radius;
-    const mouthY = this.pos.y + fy * this.radius;
+    const mouthX = this.pos.x + dirX * this.radius;
+    const mouthY = this.pos.y + dirY * this.radius;
 
     const dx = target.pos.x - mouthX;
     const dy = target.pos.y - mouthY;
@@ -411,16 +248,106 @@ export class Agent {
     }
   }
 
+  // --- Steering & Physics ---
+
+  _seek(targetPos) {
+    const dt = c.SIM_SPEED;
+    const angleToTarget = Math.atan2(targetPos.y - this.pos.y, targetPos.x - this.pos.x);
+    const diff = Math.atan2(Math.sin(angleToTarget - this.heading), Math.cos(angleToTarget - this.heading));
+
+
+    const turnSpeed = 0.1 * dt;
+    if (Math.abs(diff) > turnSpeed) {
+      this.heading += Math.sign(diff) * turnSpeed;
+    } else {
+      this.heading = angleToTarget;
+    }
+
+    this.acc.x += Math.cos(this.heading) * 0.2 * dt;
+    this.acc.y += Math.sin(this.heading) * 0.2 * dt;
+  }
+
   _wander() {
     const dt = c.SIM_SPEED;
+
     this.heading += (Math.random() - 0.5) * 0.2 * dt;
-
     const speed = 0.2 * dt;
-    const forceX = Math.cos(this.heading) * speed;
-    const forceY = Math.sin(this.heading) * speed;
 
-    this.acc.x += forceX;
-    this.acc.y += forceY;
+    this.acc.x += Math.cos(this.heading) * speed;
+    this.acc.y += Math.sin(this.heading) * speed;
+  }
+
+  _separate(agents) {
+    const dt = c.SIM_SPEED;
+    const perception = this.radius * 1.5;
+    const steer = { x: 0, y: 0 };
+    let count = 0;
+
+    for (const other of agents) {
+      if (other === this) continue;
+
+      const dx = this.pos.x - other.pos.x;
+      const dy = this.pos.y - other.pos.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+
+      if (d > 0 && d < perception) {
+        steer.x += (dx / d) / d;
+        steer.y += (dy / d) / d;
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      steer.x /= count;
+      steer.y /= count;
+
+      const mag = Math.sqrt(steer.x * steer.x + steer.y * steer.y);
+      if (mag > 0) {
+        steer.x = (steer.x / mag) * this.maxSpeed;
+        steer.y = (steer.y / mag) * this.maxSpeed;
+
+        this.acc.x += (steer.x - this.vel.x) * 1.5 * dt;
+        this.acc.y += (steer.y - this.vel.y) * 1.5 * dt;
+      }
+    }
+  }
+
+
+
+  _handleMetabolism() {
+    const timeDelta = (1 / 60) * c.SIM_SPEED;
+
+    this.age += timeDelta / 6;
+
+    const baseRate = (this.dna.metabolism ?? 0.5) * timeDelta;
+    const movementCost = this.vel.mag() * 0.02 * c.SIM_SPEED;
+    this.energy -= baseRate + movementCost;
+
+    if (this.age >= (this.dna.max_age ?? 100) || this.energy <= 0) {
+      this.energy = 0;
+    }
+  }
+
+  _handleReproduction(agents) {
+    const dt = c.SIM_SPEED;
+
+    if (this.energy > 100) {
+      this.reproductionPoints += dt;
+    } else if (this.energy < 50) {
+      this.reproductionPoints = Math.max(0, this.reproductionPoints - dt);
+    }
+
+    if (this.reproductionPoints >= this.reproductionThreshold) {
+      this.reproductionPoints = 0;
+      this.energy -= 10;
+      agents.push(this._birth());
+      this.didHaveOffspring = true;
+    }
+  }
+
+  _birth() {
+    const offspringDNA = DNA.createDNA(this.dna);
+    return new Agent(this.pos.x + 20, this.pos.y, offspringDNA);
   }
 
   _applyPhysics() {
@@ -445,19 +372,17 @@ export class Agent {
       return;
     }
 
-    let speed = this.vel.mag();
-    let currentTurnRate = (this.MAX_TURN_RATE / (1 + speed * 2)) * dt;
-
-    let diff = targetAngle - this.heading;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    while (diff > Math.PI) diff -= Math.PI * 2;
+    const currentTurnRate = (this.MAX_TURN_RATE / (1 + this.vel.mag() * 2)) * dt;
+    const diff = Math.atan2(Math.sin(targetAngle - this.heading), Math.cos(targetAngle - this.heading));
 
     if (Math.abs(diff) > currentTurnRate) {
-      this.heading += diff > 0 ? currentTurnRate : -currentTurnRate;
+      this.heading += Math.sign(diff) * currentTurnRate;
     } else {
       this.heading = targetAngle;
     }
   }
+
+  // --- Drawing Logic ---
 
   draw(ctx, isSelected) {
     if (c.DEBUG_MODE && this.targetPosition) {
@@ -487,8 +412,9 @@ export class Agent {
 
   _drawLionBody(ctx) {
     const r = this.radius;
-    const baseHue = this.dna.color || 40;
+    const baseHue = this.dna.color ?? 40;
 
+    // Tail
     ctx.beginPath();
     ctx.strokeStyle = `hsl(${baseHue}, 50%, 30%)`;
     ctx.lineWidth = r * 0.2;
@@ -496,6 +422,7 @@ export class Agent {
     ctx.quadraticCurveTo(-r * 1.5, r * 0.5, -r * 1.8, 0);
     ctx.stroke();
 
+    // Main Body & Mane
     ctx.beginPath();
     ctx.ellipse(-r * 0.3, 0, r * 1.2, r * 0.8, 0, 0, Math.PI * 2);
     ctx.fillStyle = `hsl(${baseHue}, 60%, 50%)`;
@@ -506,11 +433,13 @@ export class Agent {
     ctx.fillStyle = `hsl(${baseHue}, 70%, 30%)`;
     ctx.fill();
 
+    // Head
     ctx.beginPath();
     ctx.arc(r * 0.7, 0, r * 0.6, 0, Math.PI * 2);
     ctx.fillStyle = `hsl(${baseHue}, 60%, 60%)`;
     ctx.fill();
 
+    // Ears & Eyes
     ctx.fillStyle = `hsl(${baseHue}, 60%, 40%)`;
     [-1, 1].forEach((side) => {
       ctx.beginPath();
@@ -525,29 +454,28 @@ export class Agent {
       ctx.fill();
     });
 
+    // Fangs (When attacking)
     if (this.currentState === "ATTACKING") {
       ctx.fillStyle = "#fff";
-
-      ctx.beginPath();
-      ctx.moveTo(r * 1.0, -r * 0.3);
-      ctx.lineTo(r * 1.2, -r * 0.2);
-      ctx.lineTo(r * 1.5, -r * 0.1);
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(r * 1.0, r * 0.3);
-      ctx.lineTo(r * 1.2, r * 0.2);
-      ctx.lineTo(r * 1.5, r * 0.1);
-      ctx.fill();
+      [-0.3, 0.3].forEach((offset) => {
+        ctx.beginPath();
+        ctx.moveTo(r * 1.0, offset * r);
+        ctx.lineTo(r * 1.2, (offset * 0.67) * r);
+        ctx.lineTo(r * 1.5, (offset * 0.33) * r);
+        ctx.fill();
+      });
     }
   }
 
   _drawStatusRing(ctx, isSelected) {
+    const colors = {
+      ATTACKING: "red",
+      FLEEING: "orange",
+      EATING: "green",
+    };
+
     ctx.lineWidth = 3;
-    if (isSelected) ctx.strokeStyle = "yellow";
-    else if (this.currentState === "ATTACKING") ctx.strokeStyle = "red";
-    else if (this.currentState === "FLEEING") ctx.strokeStyle = "orange";
-    else if (this.currentState === "EATING") ctx.strokeStyle = "green";
+    ctx.strokeStyle = isSelected ? "yellow" : colors[this.currentState] ?? "white";
 
     ctx.beginPath();
     ctx.arc(0, 0, this.radius * 2.2, 0, Math.PI * 2);
@@ -555,18 +483,18 @@ export class Agent {
   }
 
   _drawDebugLine(ctx, target) {
+    const colors = {
+      ATTACKING: "rgba(255, 50, 50, 0.6)",
+      EATING: "rgba(50, 255, 50, 0.6)",
+      FLEEING: "rgba(255, 165, 0, 0.6)",
+    };
+
     ctx.save();
     ctx.beginPath();
     ctx.setLineDash([5, 5]);
     ctx.moveTo(this.pos.x, this.pos.y);
     ctx.lineTo(target.x, target.y);
-
-    let color = "rgba(255, 255, 255, 0.2)";
-    if (this.currentState === "ATTACKING") color = "rgba(255, 50, 50, 0.6)";
-    if (this.currentState === "EATING") color = "rgba(50, 255, 50, 0.6)";
-    if (this.currentState === "FLEEING") color = "rgba(255, 165, 0, 0.6)";
-
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = colors[this.currentState] ?? "rgba(255, 255, 255, 0.2)";
     ctx.stroke();
 
     ctx.setLineDash([]);

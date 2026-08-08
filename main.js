@@ -177,7 +177,6 @@ function update() {
   // 1. System Logic (Spawns food, cleans up eaten food)
   foodSystem.update();
 
-  // 2. Agent Logic (Movement, Metabolism, Decisions, AND Eating)
   agents.forEach((agent) => {
     agent.update(foodSystem.foods, agents);
 
@@ -223,17 +222,8 @@ function update() {
 
   });
 
-  particles.forEach((p, index) => {
-    p.update();
-    p.draw(ctx);
-    if (p.life <= 0) particles.splice(index, 1);
-  });
-
-  // 3. Particle Logic (Update and Cleanup)
-  // if (particles) {
-  //     particles = particles.filter(p => p.life > 0);
-  //     particles.forEach(p => p.update());
-  // }
+  particles.forEach((p) => p.update());
+  particles = particles.filter((p) => p.life > 0);
 
   // 4. Cleanup Dead Agents
   agents = agents.filter((agent) => !agent.isDead);
@@ -280,7 +270,6 @@ function draw() {
 }
 function gameLoop() {
   update();
-  foodSystem.update(foodConfig);
   draw();
   requestAnimationFrame(gameLoop);
 }
@@ -461,41 +450,12 @@ function showZoneEditor(zone) {
   document.getElementById("editor-panel").style.display = "block";
 }
 
-function handleFeeding(agents, foodSystem) {
-  for (let agent of agents) {
-    if (agent.isDead) continue;
 
-    for (let food of foodSystem.foods) {
-      if (food.isEaten) continue;
-
-      // 1. Calculate Distance
-      const dx = agent.pos.x - food.pos.x;
-      const dy = agent.pos.y - food.pos.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      // 2. Collision Check (Sum of radii)
-      if (distance < agent.radius + food.radius) {
-        // Apply nutrition from food config
-        agent.energy += food.nutritionValue;
-
-        // Cap energy at max
-        if (agent.energy > agent.maxEnergy) {
-          agent.energy = agent.maxEnergy;
-        }
-
-        // Mark for removal
-        food.isEaten = true;
-      }
-    }
-  }
-}
 
 const debugToggle = document.getElementById("debug-toggle");
 
 debugToggle.addEventListener("change", (e) => {
-  // This updates the shared constant that the Agent class reads
   c.DEBUG_MODE = e.target.checked;
 });
-// Start everything
 init();
 gameLoop();
