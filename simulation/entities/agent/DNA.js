@@ -5,14 +5,14 @@ export const DNA_BLUEPRINT = {
     color:              { min: 0,   max: 360,  step: 10,  label: "Color (Hue)" },
     kin_recogn:         { min: 1,   max: 180,  step: 5,   label: "Kin Recognition" },
     size:               { min: 0.2, max: 5.0,  step: 0.1, label: "Physical Size" },
-    speed:              { min: 0.1, max: 5.0,  step: 0.1, label: "Movement Speed" },
+    max_speed:          { min: 0.1, max: 5.0,  step: 0.1, label: "Movement Speed" },
     foodSizePreference: { min: -10, max: 100, step: 1,   label: "Min Food Size" },
     hungerThreshold:    { min: -10, max: 100, step: 1,   label: "Hunger Threshold" },
     agentVisionRange:   { min: 50,  max: 1000, step: 10,  label: "Agent Vision Range" },
     aggression:         { min: 0,   max: 1,    step: 0.01,label: "Aggression" },
     fleefullness:       { min: 0,   max: 1,    step: 0.01,label: "Fleefullness" },
-    sensingRange:       { min: 0,   max: 1000, step: 5,   label: "Sensing Range" },
-    metabolism:         { min: 0.5,   max: 1.5, step: 0.01,   label: "Sensing Range" }
+    vision_range:       { min: 0,   max: 1000, step: 5,   label: "Sensing Range" },
+    metabolism:         { min: 0.5,   max: 1.5, step: 0.01,   label: "metabolism" }
 };
 
 const getRandomStepValue = (trait) => {

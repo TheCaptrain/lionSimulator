@@ -107,14 +107,14 @@ export class FoodSystem {
     this.foods.forEach((f) => f.draw(ctx));
   }
 
-  spawnMeat(x, y, energyValue, hue, heading, originalRadius) {
-    const meatConfig = {
-        nutrition: energyValue,
-        maxSize: originalRadius, // Keeps it the same size as the living lion
-        growthRate: 0 
-    };
+//   spawnMeat(x, y, energyValue, hue, heading, originalRadius) {
+//     const meatConfig = {
+//         nutrition: energyValue,
+//         maxSize: originalRadius, // Keeps it the same size as the living lion
+//         growthRate: 0 
+//     };
     
-    const corpse = new Food(x, y, meatConfig, "meat", { hue, heading });
-    this.foods.push(corpse);
-}
+//     const corpse = new Food(x, y, meatConfig, "meat", { hue, heading });
+//     this.foods.push(corpse);
+// }
 }

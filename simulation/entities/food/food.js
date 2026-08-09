@@ -5,10 +5,10 @@ export class Food {
     this.type = type;
     this.corpseData = corpseData; // { hue: number, heading: number }
 
-    this.maxSize = config.maxSize || 15;
-    this.maxNutrition = config.nutrition || 5;
+    this.maxSize = config.maxSize || 30;
+    this.maxNutrition = config.nutrition || 500;
     this.nutritionValue = this.type === "meat" ? this.maxNutrition : 1.0;
-    this.growthRate = config.growthRate || 0.1;
+    this.growthRate = config.growthRate || 0.2;
     this.isEaten = false;
   }
 
@@ -23,18 +23,7 @@ export class Food {
     return Math.max(0, ratio * this.maxSize);
 }
 
-//   update(speed) {
-//     if (this.isEaten) return;
 
-//     // Only plants grow over time. Meat usually decays or stays static.
-//     if (this.type === "plant" && this.nutritionValue < this.maxNutrition) {
-//       this.nutritionValue += this.growthRate * speed;
-//     }
-
-//     if (this.nutritionValue <= 0.1) {
-//       this.isEaten = true;
-//     }
-//   }
 
 update(speed) {
     if (this.isEaten) return;
