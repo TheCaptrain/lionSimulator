@@ -44,13 +44,18 @@ export class Agent {
     // Movement & Expressed Attributes
     this.heading = Math.random() * Math.PI * 2;
     this.maxSpeed = this.dna.maxSpeed ?? this.dna.max_speed;
-    this.radius = c.BASE_AGENT_RADIUS * (c.SIZE_MAP[this.dna.size_label] ?? 1.0);
+    this.radius =
+      c.BASE_AGENT_RADIUS * (c.SIZE_MAP[this.dna.size_label] ?? 1.0);
     this.visionRange = this.dna.visionRange ?? this.dna.vision_range ?? 200;
 
     // Behavior & State
     this.currentState = "WANDERING";
     this.behaviorTimer = 0;
     this.targetPosition = null;
+
+    // Decision Throttling (Evaluates ~1 time per second at 60 FPS)
+    this.decisionInterval = 60;
+    this.decisionTimer = Math.floor(Math.random() * this.decisionInterval);
 
     // Reproduction
     this.reproductionPoints = 0;
@@ -94,13 +99,15 @@ export class Agent {
   identifyRelationship(otherAgent) {
     const diff = Math.abs(this.dna.color - otherAgent.dna.color);
     const colorDistance = diff > 180 ? 360 - diff : diff;
-    return colorDistance <= (this.dna.kinRecognition ?? this.dna.kin_recognition ?? 15)
+    return colorDistance <=
+      (this.dna.kinRecognition ?? this.dna.kin_recognition ?? 15)
       ? "Family"
       : "Stranger";
   }
 
   findFood(foods, agents) {
-    if (this.energy / this.maxEnergy > (this.dna.hungerThreshold ?? 0.8)) return;
+    if (this.energy / this.maxEnergy > (this.dna.hungerThreshold ?? 0.8))
+      return;
 
     const targets = this._getFoodTargets(foods, agents);
     if (!targets.length) return;
@@ -116,7 +123,8 @@ export class Agent {
 
       if (distSq > viewDistSq) continue;
 
-      if (Math.sqrt(distSq) < this.radius + target.radius) {
+      const combinedRadiusSq = (this.radius + target.radius) ** 2;
+      if (distSq < combinedRadiusSq) {
         this._eatTarget(target);
         return;
       }
@@ -142,7 +150,12 @@ export class Agent {
       if (agents?.length) {
         for (const agent of agents) {
           if (agent !== this && !agent.isSkeleton && (agent.flesh ?? 0) > 0) {
-            targets.push({ pos: agent.pos, radius: agent.radius, raw: agent, isCorpse: true });
+            targets.push({
+              pos: agent.pos,
+              radius: agent.radius,
+              raw: agent,
+              isCorpse: true,
+            });
           }
         }
       }
@@ -150,7 +163,12 @@ export class Agent {
       if (foods?.length) {
         for (const food of foods) {
           if (!food.isEaten && food.type !== "meat") {
-            targets.push({ pos: food.pos, radius: food.radius, raw: food, isCorpse: false });
+            targets.push({
+              pos: food.pos,
+              radius: food.radius,
+              raw: food,
+              isCorpse: false,
+            });
           }
         }
       }
@@ -201,13 +219,21 @@ export class Agent {
   _manageBrain(foods, agents) {
     const dt = c.SIM_SPEED;
 
+    // Execute ongoing movement/steering for current state every tick
+    this._executeState(foods, agents);
+
+    // Decrement behavior lock timer if set
     if (this.behaviorTimer > 0) {
       this.behaviorTimer -= dt;
-      this._executeState(foods, agents);
       return;
     }
 
-    this._evaluateState(foods, agents);
+    // Only re-evaluate perception/brain once per second (~60 frames)
+    this.decisionTimer++;
+    if (this.decisionTimer >= this.decisionInterval) {
+      this.decisionTimer = 0;
+      this._evaluateState(foods, agents);
+    }
   }
 
   _executeState(foods, agents) {
@@ -236,14 +262,14 @@ export class Agent {
     } else if (this.energy / this.maxEnergy < hungerThreshold) {
       this.currentState = "EATING";
       this.findFood(foods, agents);
-      this.behaviorTimer = 10;
+      this.behaviorTimer = 60;
     } else if (this._checkCombat(agents)) {
       this.currentState = "ATTACKING";
       this.behaviorTimer = 40;
     } else {
       this.currentState = "WANDERING";
       this._wander();
-      this.behaviorTimer = 1;
+      this.behaviorTimer = 20;
     }
   }
 
@@ -263,7 +289,8 @@ export class Agent {
       const distSq = dx * dx + dy * dy;
 
       if (distSq < visionRangeSq) {
-        const isKin = Math.abs(this.dna.color - other.dna.color) < kinSensitivity;
+        const isKin =
+          Math.abs(this.dna.color - other.dna.color) < kinSensitivity;
         if (isKin) {
           familyCount++;
         } else {
@@ -303,7 +330,8 @@ export class Agent {
     if (!enemies.length) return false;
 
     const aggression = this.dna.aggression ?? 0.5;
-    const combatConfidence = aggression + familyCount * 0.1 - enemies.length * 0.05;
+    const combatConfidence =
+      aggression + familyCount * 0.1 - enemies.length * 0.05;
 
     if (combatConfidence > 0.4) {
       const closestThreat = enemies[0].target;
@@ -330,9 +358,10 @@ export class Agent {
 
     const dx = target.pos.x - mouthX;
     const dy = target.pos.y - mouthY;
-    const distFromMouth = Math.sqrt(dx * dx + dy * dy);
+    const distSqFromMouth = dx * dx + dy * dy;
+    const reachSq = (target.radius + 5) ** 2;
 
-    if (distFromMouth < target.radius + 5) {
+    if (distSqFromMouth < reachSq) {
       const damage = 20.5 * dt;
       target.hitPoints -= damage;
 
@@ -351,7 +380,10 @@ export class Agent {
 
   _seek(targetPos) {
     const dt = c.SIM_SPEED;
-    const angleToTarget = Math.atan2(targetPos.y - this.pos.y, targetPos.x - this.pos.x);
+    const angleToTarget = Math.atan2(
+      targetPos.y - this.pos.y,
+      targetPos.x - this.pos.x
+    );
     const diff = normalizeAngle(angleToTarget - this.heading);
 
     const turnSpeed = 0.1 * dt;
@@ -509,7 +541,11 @@ export class Agent {
       ctx.fillText(`Meat: ${Math.floor(this.flesh)}`, 0, -this.radius * 2.5);
     } else {
       ctx.fillText(Math.floor(this.hitPoints), 0, -this.radius * 2.5);
-      ctx.fillText(`Energy: ${Math.floor(this.energy)}`, 0, -this.radius * 2.5 + 14);
+      ctx.fillText(
+        `Energy: ${Math.floor(this.energy)}`,
+        0,
+        -this.radius * 2.5 + 14
+      );
       ctx.fillText(this.currentState, 0, this.radius * 2.5 + 12);
     }
 
@@ -525,7 +561,9 @@ export class Agent {
 
   _drawStatusRing(ctx, isSelected) {
     ctx.lineWidth = 3;
-    ctx.strokeStyle = isSelected ? "yellow" : STATE_COLORS[this.currentState] ?? "white";
+    ctx.strokeStyle = isSelected
+      ? "yellow"
+      : STATE_COLORS[this.currentState] ?? "white";
 
     ctx.beginPath();
     ctx.arc(0, 0, this.radius * 2.2, 0, Math.PI * 2);
@@ -538,7 +576,8 @@ export class Agent {
     ctx.setLineDash([5, 5]);
     ctx.moveTo(this.pos.x, this.pos.y);
     ctx.lineTo(target.x, target.y);
-    ctx.strokeStyle = DEBUG_COLORS[this.currentState] ?? "rgba(255, 255, 255, 0.2)";
+    ctx.strokeStyle =
+      DEBUG_COLORS[this.currentState] ?? "rgba(255, 255, 255, 0.2)";
     ctx.stroke();
 
     ctx.setLineDash([]);

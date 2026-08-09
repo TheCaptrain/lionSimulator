@@ -7,7 +7,7 @@ export const DNA_BLUEPRINT = {
     size:               { min: 0.2, max: 5.0,  step: 0.1, label: "Physical Size" },
     max_speed:          { min: 0.1, max: 5.0,  step: 0.1, label: "Movement Speed" },
     foodSizePreference: { min: -10, max: 100, step: 1,   label: "Min Food Size" },
-    hungerThreshold:    { min: -10, max: 100, step: 1,   label: "Hunger Threshold" },
+    hungerThreshold:    { min: -1, max: 1, step: 0.1,   label: "Hunger Threshold" },
     agentVisionRange:   { min: 50,  max: 1000, step: 10,  label: "Agent Vision Range" },
     aggression:         { min: 0,   max: 1,    step: 0.01,label: "Aggression" },
     fleefullness:       { min: 0,   max: 1,    step: 0.01,label: "Fleefullness" },
