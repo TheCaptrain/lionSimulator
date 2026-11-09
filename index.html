@@ -92,11 +92,12 @@
       <div class="ui-group">
         <div style="font-size: 18px; font-weight: bold; color: #4CAF50;">Lion Sim</div>
         <div style="margin-top: 5px;">Population: <span id="pop-count">0</span></div>
+        <div>Time: <span id="clock">00:00</span></div>
       </div>
 
       <div class="ui-group">
-        <label for="master-speed">Sim Speed</label><br />
-        <input type="range" id="master-speed" min="0" max="10" step="0.01" value="0.1" />
+        <label for="master-speed">Sim Speed: <span id="speed-label">1x</span></label><br />
+        <input type="range" id="master-speed" min="0" max="10" step="0.25" value="1" />
       </div>
 
       <div class="ui-group">
@@ -118,6 +119,6 @@
 
     <canvas id="simCanvas"></canvas>
 
-    <script type="module" src="./main.js"></script>
+    <script type="module" src="./src/main.js"></script>
   </body>
 </html>
