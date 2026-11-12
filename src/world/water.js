@@ -1,4 +1,5 @@
 import { c } from "../constants.js";
+import { layeredNoise } from "../utils/noise.js";
 
 // Rivers and lakes. Water is stored as a coarse grid so isWater() is O(1),
 // which lets agents (and later fish) query it every frame.
@@ -69,37 +70,8 @@ export function generateWater() {
 // ---------------------------------------------------------------------------
 // Height map: smooth value noise, a few layers deep
 
-function hash2(ix, iy, seed) {
-  let h = Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(seed, 1274126177);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-function valueNoise(x, y, seed) {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sy = fy * fy * (3 - 2 * fy);
-
-  const top = hash2(ix, iy, seed) * (1 - sx) + hash2(ix + 1, iy, seed) * sx;
-  const bottom = hash2(ix, iy + 1, seed) * (1 - sx) + hash2(ix + 1, iy + 1, seed) * sx;
-  return top * (1 - sy) + bottom * sy;
-}
-
 function terrainHeight(x, y, seed) {
-  let height = 0;
-  let amplitude = 1;
-  let frequency = 1 / TERRAIN_WAVELENGTH;
-  let total = 0;
-  for (let octave = 0; octave < 4; octave++) {
-    height += valueNoise(x * frequency, y * frequency, seed + octave) * amplitude;
-    total += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
-  }
-  return height / total;
+  return layeredNoise(x, y, seed, TERRAIN_WAVELENGTH);
 }
 
 // ---------------------------------------------------------------------------

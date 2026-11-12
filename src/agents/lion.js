@@ -1,5 +1,15 @@
 import { Agent } from "./agent.js";
 
+const LION_ATTACK_STRENGTH = 2; // lions hit twice as hard as the base attack
+const LION_EAT_BELOW = 0.9; // lions want a meal while under this fraction of max energy
+
+// Cooperative hunting
+const HUNT_CALL_RANGE = 800; // how far a hunt call carries
+const HUNT_CALL_DURATION = 600; // steps a pridemate keeps chasing the called prey
+const HUNT_CALL_COOLDOWN = 60; // steps before a lion may call again
+const HUNT_CALL_MAX_ENERGY = 0.9; // lions fuller than this ignore the call
+const HUNT_CALL_MIN_WILLINGNESS = 0.15; // sociability * kinship needed to answer
+
 export class Lion extends Agent {
   constructor(x, y, dna = null) {
     super(x, y, dna);
@@ -9,34 +19,113 @@ export class Lion extends Agent {
 
     // Stronger and larger
     this.radius = 14;
+    this.attackStrength = LION_ATTACK_STRENGTH;
+
+    // A pride's territory is bigger than a herd's range
+    this.homeBase = 1600;
     // this.max_speed = 3.0;
+
+    // A pride is a looser group than a herd: gentler pull, more personal
+    // space. Hungry lions split up to hunt and fed lions regroup.
+    this.herdProfile = {
+      range: 500,
+      cohesion: 0.8,
+      alignment: 0.4,
+      comfortBase: 80,
+      hungerSplit: true,
+    };
+
+    // Cooperative hunting: set by a pridemate's hunt call
+    this.huntTarget = null;
+    this.huntCall = 0; // steps left on the call
+    this.callCooldown = 0; // steps until this lion may call again
+  }
+
+  update(world) {
+    if (this.huntCall > 0) this.huntCall--;
+    if (this.callCooldown > 0) this.callCooldown--;
+    super.update(world);
+  }
+
+  // Lions eat before they hunt: below this fraction of max energy a lion
+  // wants a meal, whatever its hunger threshold DNA says. (It still hunts
+  // live prey when no carcass is in sight; see Agent._evaluateState.)
+  _isHungry() {
+    const threshold = Math.max(this.dna.hungerThreshold ?? 0.8, LION_EAT_BELOW);
+    return this.energy / this.maxEnergy < threshold;
+  }
+
+  // True if there is a carcass with meat on it within sight
+  _carcassInSight(world) {
+    return world.nearestMeat(this.pos.x, this.pos.y, this.visionRange) !== null;
+  }
+
+  // A lion answering a hunt call goes after the called prey even if it
+  // is fed, instead of waiting for its own decision to come round. But a
+  // hungry lion with a carcass in sight eats first and ignores the call.
+  _evaluateState(world) {
+    const eatFirst = this._isHungry() && this._carcassInSight(world);
+    if (!eatFirst && this._huntCallActive() && this._checkCombat(world)) {
+      this.currentState = "ATTACKING";
+      this.behaviorTimer = 40;
+      return;
+    }
+    super._evaluateState(world);
+  }
+
+  _huntCallActive() {
+    if (this.huntCall <= 0 || !this.huntTarget || this.huntTarget.isDead) {
+      this.huntTarget = null;
+      return false;
+    }
+    return true;
+  }
+
+  // Tells nearby pridemates about prey. Only kin-coloured lions that are
+  // social enough, and not already full, answer the call.
+  _callPride(world, prey) {
+    if (this.callCooldown > 0) return;
+    this.callCooldown = HUNT_CALL_COOLDOWN;
+
+    for (const mate of world.near(this.pos.x, this.pos.y, HUNT_CALL_RANGE)) {
+      if (mate === this || mate.isDead || mate.type !== this.type) continue;
+
+      const willingness = (mate.dna.sociability ?? 0.5) * this._colorAffinity(mate);
+      const notFull = mate.energy / mate.maxEnergy < HUNT_CALL_MAX_ENERGY;
+      if (willingness >= HUNT_CALL_MIN_WILLINGNESS && notFull) {
+        mate.huntTarget = prey;
+        mate.huntCall = HUNT_CALL_DURATION;
+      }
+    }
   }
 
   // Override: Lions look specifically for prey (gazelles) to attack
-  _checkCombat(agents) {
-    const nearbyPrey = agents.filter(
-      (a) => a.role === "prey" && !a.isDead
-    );
-
+  _checkCombat(world) {
     let closestPrey = null;
     let closestDistSq = Infinity;
 
-    for (const prey of nearbyPrey) {
+    for (const prey of world.near(this.pos.x, this.pos.y, this.visionRange)) {
+      if (prey.role !== "prey" || prey.isDead) continue;
+
       const dx = prey.pos.x - this.pos.x;
       const dy = prey.pos.y - this.pos.y;
       const distSq = dx * dx + dy * dy;
-
-      if (distSq < this.vision_range ** 2 && distSq < closestDistSq) {
+      if (distSq < closestDistSq) {
         closestDistSq = distSq;
         closestPrey = prey;
       }
     }
 
+    // Prey spotted by this lion: tell the pride
+    if (closestPrey) this._callPride(world, closestPrey);
+
+    // Nothing in sight, but a pridemate called the hunt: join in
+    if (!closestPrey && this._huntCallActive()) closestPrey = this.huntTarget;
+
     if (closestPrey) {
       this.currentState = "ATTACKING";
-      this.targetPosition = closestPrey.pos;
-      this._seek(closestPrey.pos);
-      this._resolveAttack(closestPrey);
+      this._setFocus(closestPrey);
+      this._chase(closestPrey);
       return true;
     }
 

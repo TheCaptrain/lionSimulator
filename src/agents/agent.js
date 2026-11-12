@@ -2,10 +2,35 @@ import { c } from "../constants.js";
 import { Vector } from "../utils/vector.js";
 import * as DNA from "./dna.js";
 import { isWater } from "../world/water.js";
+import { eatGrass, grassAt, findGrass } from "../world/grass.js";
 
 // Module Constants
 const MAX_TURN_RATE = 0.05;
 const FRICTION = 0.95;
+
+// Herd neighbours are re-scanned every few steps and the result is reused,
+// so herding costs far less than scanning every agent every step.
+const HERD_REFRESH_TICKS = 6;
+const HERD_FULL_STRENGTH_WEIGHT = 3; // this many close-kin neighbours give full pull
+const HERD_ALARM_THRESHOLD = 0.25; // sociability * kinship needed to follow a herdmate's alarm
+
+// Grazing
+const GRAZE_HERE_MIN = 12; // graze right where you stand if the cell has at least this much
+const GRAZE_WANTED_MIN = 20; // only head for patches with at least this much...
+const GRAZE_STARVING_MIN = 6; // ...or this much when starving
+const MIN_GRASS_SIGHT = 250; // even short sighted animals can see grass this far
+const GRAZE_SEARCH_COOLDOWN = 30; // steps to wait before searching again after finding nothing
+
+// Home range
+const HOME_RADIUS_DEFAULT = 800;
+
+// Commitment: once an animal picks something to chase, flee from or eat, it
+// sticks with it this many steps (about 1 second at 1x) before looking around again
+const FOCUS_STEPS = 60;
+const FLEE_AIM_DISTANCE = 300; // how far ahead to aim when running away
+
+// Drawing
+const LABEL_MIN_ZOOM = 0.6; // animals show HP / energy / state text at this zoom or closer
 
 const STATE_COLORS = {
   ATTACKING: "red",
@@ -58,24 +83,64 @@ export class Agent {
     this.decisionInterval = 60;
     this.decisionTimer = Math.floor(Math.random() * this.decisionInterval);
 
+    // Multiplies c.ATTACK_DAMAGE. Species override this in their constructors.
+    this.attackStrength = 1;
+
+    // Home range. Normally an animal stays within homeRadius() of `home` and is
+    // pulled back if it strays. The home slowly moves to where it feeds, and
+    // starving animals roam further. Species set homeBase in their constructors.
+    this.home = { x, y };
+    this.homeBase = HOME_RADIUS_DEFAULT;
+
+    // Grazing: where it is heading to eat, and a pause after a fruitless search
+    this.grazeTarget = null;
+    this.grazeCooldown = 0;
+
+    // Result of the last look at nearby animals (see _getNearbyAgents), reused to avoid garbage
+    this._scan = { enemyCount: 0, familyCount: 0, closest: null };
+
+    // Commitment (see FOCUS_STEPS): what it is chasing or eating, the direction
+    // it is running away in, and how many steps until it looks around again
+    this.focus = null;
+    this.fleeDir = null;
+    this.focusTimer = 0;
+
+    // Herding. Species override `herdProfile` in their constructors.
+    //   range        how far away herd members are noticed
+    //   cohesion     pull toward the herd's centre
+    //   alignment    pull toward the herd's direction of travel
+    //   comfortBase  personal-space radius; no pull inside it (grows with herd size)
+    //   hungerSplit  hungry animals drift away from the group (fission-fusion)
+    this.herdProfile = {
+      range: 300,
+      cohesion: 1.0,
+      alignment: 0.8,
+      comfortBase: 40,
+      hungerSplit: false,
+    };
+    this._herd = null; // cached summary of nearby herd members
+    this._herdTimer = Math.floor(Math.random() * HERD_REFRESH_TICKS);
+
     // Reproduction
     this.reproductionPoints = 0;
     this.reproductionThreshold = 900;
     this.didHaveOffspring = false;
   }
 
-  update(foods, agents) {
+  update(world) {
     if (this.isCorpse) {
       this.vel.x = 0;
       this.vel.y = 0;
       this.acc.x = 0;
       this.acc.y = 0;
 
-      if (this.flesh <= 0) {
-        this.skeletonTimer = (this.skeletonTimer || 100) - 1;
-        if (this.skeletonTimer <= 0) {
-          this.isDead = true;
-        }
+      if (this.flesh > 0) {
+        // Uneaten meat rots away
+        this.flesh = Math.max(0, this.flesh - c.CORPSE_ROT_RATE);
+      } else {
+        // Bare bones stay for a while, then the body is removed from the world
+        this.skeletonTimer = (this.skeletonTimer ?? c.SKELETON_LIFETIME) - 1;
+        if (this.skeletonTimer <= 0) this.isGone = true;
       }
       return;
     }
@@ -86,10 +151,10 @@ export class Agent {
 
       this.inWater = isWater(this.pos.x, this.pos.y);
 
-      this._separate(agents);
+      this._separate(world);
       this._handleMetabolism();
-      this._manageBrain(foods, agents);
-      this._handleReproduction(agents);
+      this._manageBrain(world);
+      this._handleReproduction(world);
       this._applyPhysics();
       this._smoothRotate();
     }
@@ -108,41 +173,58 @@ export class Agent {
       : "Stranger";
   }
 
+  // Whether this animal wants to eat right now. Species can override this.
+  // Below SURVIVAL_EAT_BELOW every animal eats, whatever its hunger threshold DNA says.
+  _isHungry() {
+    const threshold = Math.max(this.dna.hungerThreshold ?? 0.8, c.SURVIVAL_EAT_BELOW);
+    return this.energy / this.maxEnergy < threshold;
+  }
+
   // Returns true if the agent is eating or heading for food, false if it has
   // nothing to go for (so the caller can have it search instead of standing still).
-  findFood(foods, agents) {
-    if (this.energy / this.maxEnergy > (this.dna.hungerThreshold ?? 0.8))
-      return false;
+  // Carnivores eat meat from carcasses; everyone else grazes.
+  findFood(world) {
+    if (!this._isHungry()) return false;
+    return this.isCarnivore ? this._findMeat(world) : this._findGrass();
+  }
 
-    const targets = this._getFoodTargets(foods, agents);
-    if (!targets.length) return false;
+  // --- Grazing ---
 
-    const viewDistSq = this.visionRange ** 2;
-    let closestTarget = null;
-    let closestDistSq = Infinity;
+  _findGrass() {
+    // Standing on enough grass: just eat it
+    if (grassAt(this.pos.x, this.pos.y) >= GRAZE_HERE_MIN) {
+      this._graze();
+      return true;
+    }
 
-    for (const target of targets) {
-      const dx = target.pos.x - this.pos.x;
-      const dy = target.pos.y - this.pos.y;
-      const distSq = dx * dx + dy * dy;
+    const starving = this.energy / this.maxEnergy < c.SURVIVAL_EAT_BELOW;
+    const wanted = starving ? GRAZE_STARVING_MIN : GRAZE_WANTED_MIN;
 
-      if (distSq > viewDistSq) continue;
+    // Drop the target if the patch has been eaten down on the way
+    if (this.grazeTarget && grassAt(this.grazeTarget.x, this.grazeTarget.y) < wanted / 2) {
+      this.grazeTarget = null;
+    }
 
-      const combinedRadiusSq = (this.radius + target.radius) ** 2;
-      if (distSq < combinedRadiusSq) {
-        this._eatTarget(target);
-        return true;
-      }
-
-      if (distSq < closestDistSq) {
-        closestDistSq = distSq;
-        closestTarget = target;
+    if (!this.grazeTarget) {
+      if (this.grazeCooldown > 0) {
+        this.grazeCooldown--;
+      } else {
+        const range = Math.max(this.visionRange, MIN_GRASS_SIGHT);
+        const homeRadius = starving ? Infinity : this._homeRadius();
+        this.grazeTarget = findGrass(this.pos.x, this.pos.y, range, wanted, this.home, homeRadius);
+        if (!this.grazeTarget) this.grazeCooldown = GRAZE_SEARCH_COOLDOWN;
       }
     }
 
-    if (closestTarget) {
-      this.targetPosition = closestTarget.pos;
-      this._seek(closestTarget.pos);
+    if (this.grazeTarget) {
+      this.targetPosition = this.grazeTarget;
+      this._seek(this.grazeTarget);
+      return true;
+    }
+
+    // Nowhere better to go: finish what is left on this cell rather than stand hungry
+    if (grassAt(this.pos.x, this.pos.y) > 0.5) {
+      this._graze();
       return true;
     }
 
@@ -150,84 +232,95 @@ export class Agent {
     return false;
   }
 
-  _getFoodTargets(foods, agents) {
-    const targets = [];
+  _graze() {
+    this.energy = Math.min(
+      this.maxEnergy,
+      this.energy + eatGrass(this.pos.x, this.pos.y, c.GRAZE_BITE)
+    );
 
-    if (this.isCarnivore) {
-      if (agents?.length) {
-        for (const agent of agents) {
-          if (agent !== this && !agent.isSkeleton && (agent.flesh ?? 0) > 0) {
-            targets.push({
-              pos: agent.pos,
-              radius: agent.radius,
-              raw: agent,
-              isCorpse: true,
-            });
-          }
-        }
-      }
-    } else {
-      if (foods?.length) {
-        for (const food of foods) {
-          if (!food.isEaten && food.type !== "meat") {
-            targets.push({
-              pos: food.pos,
-              radius: food.radius,
-              raw: food,
-              isCorpse: false,
-            });
-          }
-        }
-      }
-    }
-
-    return targets;
+    // Stand still and eat, and let home drift toward good feeding ground
+    this.vel.x *= 0.8;
+    this.vel.y *= 0.8;
+    this.acc.x = 0;
+    this.acc.y = 0;
+    this.targetPosition = null;
+    this.home.x += (this.pos.x - this.home.x) * c.HOME_DRIFT;
+    this.home.y += (this.pos.y - this.home.y) * c.HOME_DRIFT;
   }
 
-  _eatTarget(target) {
-    const dt = c.SIM_SPEED;
-    const bite = 1 * dt;
+  // --- Roaming ---
 
-    if (target.isCorpse) {
-      const corpse = target.raw;
-      if (!corpse.isCorpse) {
-        const damage = 20.5 * dt;
-        corpse.hitPoints = (corpse.hitPoints ?? 0) - damage;
-        corpse.didGetHit = true;
-      } else {
-        const currentFlesh = corpse.flesh ?? 0;
-        const actualBite = Math.min(bite, currentFlesh);
-        corpse.flesh = currentFlesh - actualBite;
-        this.energy += actualBite;
-      }
-    } else {
-      const food = target.raw;
-      const nutrition = food.nutritionValue ?? 0;
+  _homeRadius() {
+    return this.homeBase * (this.dna.wanderlust ?? 1);
+  }
 
-      if (nutrition > bite) {
-        food.nutritionValue = nutrition - bite;
-        this.energy += bite;
-      } else {
-        this.energy += nutrition;
-        food.nutritionValue = 0;
-        food.isEaten = true;
+  // Gentle pull back toward home once the animal has strayed past its home
+  // radius. The radius stretches as the animal gets hungrier (up to 2.5x
+  // when starving), so hungry animals roam further to find food.
+  _applyHomePull() {
+    const dx = this.home.x - this.pos.x;
+    const dy = this.home.y - this.pos.y;
+    const dist = Math.hypot(dx, dy);
+
+    const hunger = 1 - Math.min(1, Math.max(0, this.energy / this.maxEnergy));
+    const radius = this._homeRadius() * (1 + 3 * Math.max(0, hunger - 0.5));
+    if (dist <= radius || dist === 0) return;
+
+    const excess = Math.min(1, (dist - radius) / radius);
+    const force = 0.2 * c.SIM_SPEED * c.HOME_PULL * (0.4 + 1.6 * excess);
+    this.acc.x += (dx / dist) * force;
+    this.acc.y += (dy / dist) * force;
+  }
+
+  // --- Eating meat ---
+
+  _findMeat(world) {
+    // Keep eating (or heading for) the same carcass for a while instead of looking every step
+    let body = this.focus;
+    const stillGood = body && body.isCorpse && (body.flesh ?? 0) > 0;
+    if (!(stillGood && this._stayFocused())) {
+      body = world.nearestMeat(this.pos.x, this.pos.y, this.visionRange);
+      if (!body) {
+        this.focus = null;
+        this.targetPosition = null;
+        return false;
       }
+      this._setFocus(body);
     }
+
+    const dx = body.pos.x - this.pos.x;
+    const dy = body.pos.y - this.pos.y;
+    const reach = this.radius + body.radius;
+    if (dx * dx + dy * dy < reach * reach) {
+      this._eatCorpse(body);
+      return true;
+    }
+
+    this.targetPosition = body.pos;
+    this._seek(body.pos);
+    return true;
+  }
+
+  _eatCorpse(corpse) {
+    const bite = 1 * c.SIM_SPEED;
+
+    const actualBite = Math.min(bite, corpse.flesh ?? 0);
+    corpse.flesh = (corpse.flesh ?? 0) - actualBite;
+    this.energy = Math.min(this.maxEnergy, this.energy + actualBite);
 
     this.vel.x *= 0.8;
     this.vel.y *= 0.8;
     this.acc.x = 0;
     this.acc.y = 0;
-    this.targetPosition = target.pos;
+    this.targetPosition = corpse.pos;
   }
-
   // --- Internal Behavior & Perception ---
 
-  _manageBrain(foods, agents) {
+  _manageBrain(world) {
     const dt = c.SIM_SPEED;
 
     // Execute ongoing movement/steering for current state every tick
-    this._executeState(foods, agents);
+    this._executeState(world);
 
     // Decrement behavior lock timer if set
     if (this.behaviorTimer > 0) {
@@ -239,138 +332,191 @@ export class Agent {
     this.decisionTimer++;
     if (this.decisionTimer >= this.decisionInterval) {
       this.decisionTimer = 0;
-      this._evaluateState(foods, agents);
+      this._dropFocus(); // a fresh decision starts with a fresh look around
+      this._evaluateState(world);
     }
   }
 
-  _executeState(foods, agents) {
+  // --- Commitment ---
+
+  _setFocus(target) {
+    this.focus = target;
+    this.focusTimer = FOCUS_STEPS;
+  }
+
+  _dropFocus() {
+    this.focus = null;
+    this.fleeDir = null;
+    this.focusTimer = 0;
+  }
+
+  // True while still committed to the current focus (counts down one step per call)
+  _stayFocused() {
+    if (this.focusTimer <= 0) return false;
+    this.focusTimer--;
+    return true;
+  }
+
+  _chase(target) {
+    this.targetPosition = target.pos;
+    this._seek(target.pos);
+    this._resolveAttack(target);
+  }
+
+  // Commits to running in direction (dx, dy) and takes the first step
+  _startFleeing(world, dx, dy) {
+    const len = Math.hypot(dx, dy) || 1;
+    this.fleeDir = { x: dx / len, y: dy / len };
+    this.focusTimer = FOCUS_STEPS;
+    this._runAway(world);
+  }
+
+  _runAway(world) {
+    // Own object: targetPosition can point at another animal's pos, which must not be overwritten
+    const aim = (this._fleeAim ??= { x: 0, y: 0 });
+    aim.x = this.pos.x + this.fleeDir.x * FLEE_AIM_DISTANCE;
+    aim.y = this.pos.y + this.fleeDir.y * FLEE_AIM_DISTANCE;
+    this.targetPosition = aim;
+    this._seek(aim);
+  }
+
+  _executeState(world) {
     switch (this.currentState) {
       case "ATTACKING":
-        this._checkCombat(agents);
+        // Keep chasing the same target for a while instead of looking around every step
+        if (this.focus && !this.focus.isDead && this._stayFocused()) {
+          this._chase(this.focus);
+        } else {
+          if (this.focus?.isDead) this.behaviorTimer = 0; // target is down: decide what next soon
+          this.focus = null;
+          this._checkCombat(world);
+        }
         break;
       case "FLEEING":
-        this._checkFlee(agents);
+        // Keep running the same way for a while, then look again
+        if (this.fleeDir && this._stayFocused()) this._runAway(world);
+        else this._checkFlee(world);
         break;
       case "EATING":
-        // No food in sight: wander to search for some rather than standing still
-        if (!this.findFood(foods, agents)) this._wander();
+        // No food in sight: wander to search for some rather than standing still.
+        // The herd searches together.
+        if (!this.findFood(world)) {
+          this._wander();
+          this._applyHerdForces(world);
+          this._applyHomePull();
+        }
         break;
       default:
         this._wander();
+        this._applyHerdForces(world);
+        this._applyHomePull();
         break;
     }
   }
 
-  _evaluateState(foods, agents) {
-    const hungerThreshold = this.dna.hungerThreshold ?? 0.8;
-
-    if (this._checkFlee(agents)) {
+  _evaluateState(world) {
+    if (this._checkFlee(world)) {
       this.currentState = "FLEEING";
       this.behaviorTimer = 60;
-    } else if (this.energy / this.maxEnergy < hungerThreshold) {
-      this.currentState = "EATING";
-      this.findFood(foods, agents);
-      this.behaviorTimer = 60;
-    } else if (this._checkCombat(agents)) {
+    } else if (this._isHungry()) {
+      if (this.findFood(world)) {
+        this.currentState = "EATING";
+        this.behaviorTimer = 60;
+      } else if (this.isCarnivore && this._checkCombat(world)) {
+        // Hungry predator with no carcass in sight: hunt live prey
+        this.currentState = "ATTACKING";
+        this.behaviorTimer = 40;
+      } else {
+        this.currentState = "EATING"; // search (see _executeState)
+        this.behaviorTimer = 60;
+      }
+    } else if (this._checkCombat(world)) {
       this.currentState = "ATTACKING";
       this.behaviorTimer = 40;
     } else {
       this.currentState = "WANDERING";
       this._wander();
+      this._applyHomePull();
       this.behaviorTimer = 20;
     }
   }
 
-  _getNearbyAgents(agents) {
-    const visionRange = this.dna.agentVisionRange ?? 150;
-    const visionRangeSq = visionRange ** 2;
+  // Looks at the animals within this one's sight and sums them up: how many
+  // are kin, how many are not, and which non-kin one is closest. The result
+  // object is reused, so read it before scanning again.
+  _getNearbyAgents(world) {
+    const range = this.dna.agentVisionRange ?? 150;
     const kinSensitivity = this.dna.kinRecognition ?? this.dna.kin_recogn ?? 15;
+    const scan = this._scan;
+    scan.enemyCount = 0;
+    scan.familyCount = 0;
+    scan.closest = null;
+    let closestSq = Infinity;
 
-    const enemies = [];
-    let familyCount = 0;
-
-    for (const other of agents) {
+    for (const other of world.near(this.pos.x, this.pos.y, range)) {
       if (other === this || other.isDead) continue;
 
-      const dx = other.pos.x - this.pos.x;
-      const dy = other.pos.y - this.pos.y;
-      const distSq = dx * dx + dy * dy;
-
-      if (distSq < visionRangeSq) {
-        const isKin =
-          Math.abs(this.dna.color - other.dna.color) < kinSensitivity;
-        if (isKin) {
-          familyCount++;
-        } else {
-          enemies.push({ target: other, distSq });
+      if (Math.abs(this.dna.color - other.dna.color) < kinSensitivity) {
+        scan.familyCount++;
+      } else {
+        scan.enemyCount++;
+        const dx = other.pos.x - this.pos.x;
+        const dy = other.pos.y - this.pos.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < closestSq) {
+          closestSq = distSq;
+          scan.closest = other;
         }
       }
     }
-
-    enemies.sort((a, b) => a.distSq - b.distSq);
-    return { enemies, familyCount };
+    return scan;
   }
 
-  _checkFlee(agents) {
-    const { enemies, familyCount } = this._getNearbyAgents(agents);
-    if (!enemies.length) return false;
+  _checkFlee(world) {
+    const scan = this._getNearbyAgents(world);
+    if (scan.enemyCount === 0) return false;
 
     const fearfulness = this.dna.fleefullness ?? 0.5;
-    const fearScore = enemies.length * fearfulness - familyCount * 0.1;
+    const fearScore = scan.enemyCount * fearfulness - scan.familyCount * 0.1;
 
     if (fearScore > 0.6) {
-      const closestThreat = enemies[0].target;
-      const escapeVector = {
-        x: this.pos.x - (closestThreat.pos.x - this.pos.x),
-        y: this.pos.y - (closestThreat.pos.y - this.pos.y),
-      };
-
-      this.targetPosition = escapeVector;
-      this._seek(escapeVector);
+      const threat = scan.closest;
+      this._startFleeing(world, this.pos.x - threat.pos.x, this.pos.y - threat.pos.y);
       return true;
     }
 
     return false;
   }
 
-  _checkCombat(agents) {
-    const { enemies, familyCount } = this._getNearbyAgents(agents);
-    if (!enemies.length) return false;
+  _checkCombat(world) {
+    const scan = this._getNearbyAgents(world);
+    if (scan.enemyCount === 0) return false;
 
     const aggression = this.dna.aggression ?? 0.5;
     const combatConfidence =
-      aggression + familyCount * 0.1 - enemies.length * 0.05;
+      aggression + scan.familyCount * 0.1 - scan.enemyCount * 0.05;
 
     if (combatConfidence > 0.4) {
-      const closestThreat = enemies[0].target;
       this.currentState = "ATTACKING";
-      this.targetPosition = closestThreat.pos;
-      this._seek(closestThreat.pos);
-      this._resolveAttack(closestThreat);
+      this._setFocus(scan.closest);
+      this._chase(scan.closest);
       return true;
     }
 
     return false;
   }
-
   _resolveAttack(target) {
     const dt = c.SIM_SPEED;
-    const speed = this.vel.mag();
-    if (speed < 0.1) return;
 
-    const dirX = this.vel.x / speed;
-    const dirY = this.vel.y / speed;
+    // A bite lands when the target is within reach of this animal's body edge.
+    // (It used to depend on the direction of travel and a minimum speed that
+    // slower animals never reached, so they could chase prey but never bite it.)
+    const dx = target.pos.x - this.pos.x;
+    const dy = target.pos.y - this.pos.y;
+    const reach = this.radius + target.radius + c.BITE_REACH;
 
-    const mouthX = this.pos.x + dirX * this.radius;
-    const mouthY = this.pos.y + dirY * this.radius;
-
-    const dx = target.pos.x - mouthX;
-    const dy = target.pos.y - mouthY;
-    const distSqFromMouth = dx * dx + dy * dy;
-    const reachSq = (target.radius + 5) ** 2;
-
-    if (distSqFromMouth < reachSq) {
-      const damage = 20.5 * dt;
+    if (dx * dx + dy * dy < reach * reach) {
+      const damage = c.ATTACK_DAMAGE * this.attackStrength * dt;
       target.hitPoints -= damage;
 
       const angle = Math.atan2(dy, dx);
@@ -394,7 +540,9 @@ export class Agent {
     );
     const diff = normalizeAngle(angleToTarget - this.heading);
 
-    const turnSpeed = 0.1 * dt;
+    // Turning scales with movement speed, otherwise fast animals have a huge
+    // turning circle and orbit their target without ever reaching it
+    const turnSpeed = 0.1 * dt * c.MOVE_SPEED_SCALE;
     if (Math.abs(diff) > turnSpeed) {
       this.heading += Math.sign(diff) * turnSpeed;
     } else {
@@ -415,14 +563,141 @@ export class Agent {
     this.acc.y += Math.sin(this.heading) * speed;
   }
 
-  _separate(agents) {
+  // --- Herding ---
+  // Boids-style cohesion and alignment (separation is _separate), driven by
+  // the animal's sociability. Colour decides who counts as herd: only animals of
+  // the same species with a similar hue are followed, and the closer the hue,
+  // the stronger the pull. So a mixed area sorts itself into colour-matched herds.
+
+  // 1 for the same hue (within kin recognition), fading to 0 at twice that.
+  _colorAffinity(other) {
+    const kin = this.dna.kin_recogn ?? 15;
+    const diff = Math.abs(this.dna.color - other.dna.color);
+    const hueDistance = diff > 180 ? 360 - diff : diff;
+    if (hueDistance <= kin) return 1;
+    if (hueDistance >= kin * 2) return 0;
+    return 1 - (hueDistance - kin) / kin;
+  }
+
+  // Summarises the herd around this animal: centre, average heading, total
+  // kinship weight, and the closest herdmate that is currently fleeing.
+  _refreshHerd(world) {
+    const range = this.herdProfile.range;
+    let weight = 0;
+    let cx = 0;
+    let cy = 0;
+    let hx = 0;
+    let hy = 0;
+    let count = 0;
+    let alarmMate = null;
+    let alarmWeight = 0;
+
+    for (const other of world.near(this.pos.x, this.pos.y, range)) {
+      if (other === this || other.isDead || other.type !== this.type) continue;
+
+      const w = this._colorAffinity(other);
+      if (w <= 0) continue;
+
+      weight += w;
+      count++;
+      cx += other.pos.x * w;
+      cy += other.pos.y * w;
+
+      const speed = other.vel.mag();
+      if (speed > 0.0001) {
+        hx += (other.vel.x / speed) * w;
+        hy += (other.vel.y / speed) * w;
+      }
+
+      // Only a herdmate that has itself just seen a threat counts as an alarm
+      if ((other.sawThreatTimer ?? 0) > 0 && w > alarmWeight) {
+        alarmMate = other;
+        alarmWeight = w;
+      }
+    }
+
+    this._herd =
+      count === 0
+        ? null
+        : {
+            x: cx / weight,
+            y: cy / weight,
+            hx: hx / weight,
+            hy: hy / weight,
+            weight,
+            count,
+            alarmMate,
+            alarmWeight,
+          };
+  }
+
+  _updateHerdCache(world) {
+    if (++this._herdTimer >= HERD_REFRESH_TICKS) {
+      this._herdTimer = 0;
+      this._refreshHerd(world);
+    }
+  }
+
+  // True if a herdmate is running and this animal is social (and close enough
+  // in colour) to join in. Used by prey to spread alarm through the herd.
+  _herdIsAlarmed() {
+    const h = this._herd;
+    if (!h || !h.alarmMate) return false;
+    return (this.dna.sociability ?? 0.5) * h.alarmWeight >= HERD_ALARM_THRESHOLD;
+  }
+
+  // Adds herd steering to this step's acceleration. `boost` strengthens it,
+  // e.g. when the herd is under attack and needs to run as one.
+  _applyHerdForces(world, boost = 1) {
+    this._updateHerdCache(world);
+    const h = this._herd;
+    if (!h) return;
+
+    const p = this.herdProfile;
+    const sociability = this.dna.sociability ?? 0.5;
+
+    // More close kin nearby means a stronger pull, up to a limit
+    let strength =
+      sociability * Math.min(1, h.weight / HERD_FULL_STRENGTH_WEIGHT) * boost;
+    if (p.hungerSplit) {
+      // Fission-fusion: hungry animals spread out to find food, fed ones regroup
+      strength *= Math.min(1, (this.energy / this.maxEnergy) * 1.5);
+    }
+    if (strength <= 0) return;
+
+    const unit = 0.2 * c.SIM_SPEED; // same base push as _wander
+
+    // Cohesion. Nothing inside personal space; the pull grows with distance, so
+    // animals out on the edge of the group are drawn in hardest (selfish herd).
+    const dx = h.x - this.pos.x;
+    const dy = h.y - this.pos.y;
+    const dist = Math.hypot(dx, dy);
+    const comfort = p.comfortBase + 14 * Math.sqrt(h.count);
+    if (dist > comfort) {
+      const pull = Math.min(1, (dist - comfort) / Math.max(1, p.range - comfort));
+      const force = unit * p.cohesion * strength * (0.3 + 0.7 * pull);
+      this.acc.x += (dx / dist) * force;
+      this.acc.y += (dy / dist) * force;
+    }
+
+    // Alignment: head the way the herd is heading. The average heading is
+    // shorter the more the herd disagrees, so a milling herd pulls less.
+    const align = Math.hypot(h.hx, h.hy);
+    if (align > 0.01) {
+      const force = unit * p.alignment * strength * align;
+      this.acc.x += (h.hx / align) * force;
+      this.acc.y += (h.hy / align) * force;
+    }
+  }
+
+  _separate(world) {
     const dt = c.SIM_SPEED;
     const perception = this.radius * 1.5;
     const steer = { x: 0, y: 0 };
     let count = 0;
 
-    for (const other of agents) {
-      if (other === this) continue;
+    for (const other of world.near(this.pos.x, this.pos.y, perception)) {
+      if (other === this || other.isDead) continue;
 
       const dx = this.pos.x - other.pos.x;
       const dy = this.pos.y - other.pos.y;
@@ -455,13 +730,15 @@ export class Agent {
 
     this.age += timeDelta / 6;
 
-    const baseRate = (this.dna.metabolism ?? 1) * c.SIM_SPEED * 0.001;
+    // Cost of being alive, plus a cost per world unit actually travelled
+    const baseRate = (this.dna.metabolism ?? 1) * c.SIM_SPEED * c.BASE_ENERGY_DRAIN;
     const swimMult = this.inWater ? c.WATER_ENERGY_MULT : 1;
-    const movementCost = this.vel.mag() * 0.002 * c.SIM_SPEED * swimMult;
+    const distance = this.vel.mag() * c.MOVE_SPEED_SCALE;
+    const movementCost = distance * c.MOVE_ENERGY_COST * swimMult;
     this.energy -= baseRate + movementCost;
   }
 
-  _handleReproduction(agents) {
+  _handleReproduction(world) {
     const dt = c.SIM_SPEED;
 
     if (this.energy > 100) {
@@ -470,17 +747,24 @@ export class Agent {
       this.reproductionPoints = Math.max(0, this.reproductionPoints - dt);
     }
 
-    if (this.reproductionPoints >= this.reproductionThreshold) {
+    // Waits (keeping its points) until it has the energy to actually pay for a baby
+    if (this.reproductionPoints >= this.reproductionThreshold && this.energy >= 100) {
       this.reproductionPoints = 0;
-      this.energy -= 10;
-      agents.push(this._birth());
+
+      // The baby's energy comes from the parent, so breeding cannot create energy
+      this.energy -= c.OFFSPRING_ENERGY;
+      const baby = this._birth();
+      baby.energy = c.OFFSPRING_ENERGY;
+      world.add(baby);
       this.didHaveOffspring = true;
     }
   }
 
   _birth() {
     const offspringDNA = DNA.createDNA(this.dna);
-    return new this.constructor(this.pos.x + 20, this.pos.y, offspringDNA);
+    const baby = new this.constructor(this.pos.x + 20, this.pos.y, offspringDNA);
+    baby.home = { x: this.home.x, y: this.home.y }; // grows up in the parent's range
+    return baby;
   }
 
   _applyPhysics() {
@@ -494,6 +778,13 @@ export class Agent {
     const stepMult = c.MOVE_SPEED_SCALE * (this.inWater ? c.WATER_SPEED_MULT : 1);
     this.pos.x += this.vel.x * stepMult;
     this.pos.y += this.vel.y * stepMult;
+
+    // The world has an edge: stop there instead of running off the map
+    if (this.pos.x < 0) { this.pos.x = 0; this.vel.x = Math.max(0, this.vel.x); }
+    else if (this.pos.x > c.WORLD_WIDTH) { this.pos.x = c.WORLD_WIDTH; this.vel.x = Math.min(0, this.vel.x); }
+    if (this.pos.y < 0) { this.pos.y = 0; this.vel.y = Math.max(0, this.vel.y); }
+    else if (this.pos.y > c.WORLD_HEIGHT) { this.pos.y = c.WORLD_HEIGHT; this.vel.y = Math.min(0, this.vel.y); }
+
     this.acc.mult(0);
   }
 
@@ -509,7 +800,8 @@ export class Agent {
       return;
     }
 
-    const currentTurnRate = (MAX_TURN_RATE / (1 + this.vel.mag() * 2)) * dt;
+    const currentTurnRate =
+      (MAX_TURN_RATE / (1 + this.vel.mag() * 2)) * dt * c.MOVE_SPEED_SCALE;
     const diff = normalizeAngle(targetAngle - this.heading);
 
     if (Math.abs(diff) > currentTurnRate) {
@@ -521,7 +813,7 @@ export class Agent {
 
   // --- Drawing Logic ---
 
-  draw(ctx, isSelected) {
+  draw(ctx, isSelected, zoom = 1) {
     if (c.DEBUG_MODE && this.targetPosition) {
       this._drawDebugLine(ctx, this.targetPosition);
     }
@@ -545,21 +837,25 @@ export class Agent {
       this._drawStatusRing(ctx, isSelected);
     }
 
-    ctx.rotate(-this.heading);
-    ctx.fillStyle = "white";
-    ctx.font = "bold 12px Arial";
-    ctx.textAlign = "center";
+    // Text is slow to draw and unreadable when small, so only label animals
+    // when zoomed in close enough to read it, or when one is selected
+    if (isSelected || zoom >= LABEL_MIN_ZOOM) {
+      ctx.rotate(-this.heading);
+      ctx.fillStyle = "white";
+      ctx.font = "bold 12px Arial";
+      ctx.textAlign = "center";
 
-    if (this.isCorpse) {
-      ctx.fillText(`Meat: ${Math.floor(this.flesh)}`, 0, -this.radius * 2.5);
-    } else {
-      ctx.fillText(Math.floor(this.hitPoints), 0, -this.radius * 2.5);
-      ctx.fillText(
-        `Energy: ${Math.floor(this.energy)}`,
-        0,
-        -this.radius * 2.5 + 14
-      );
-      ctx.fillText(this.currentState, 0, this.radius * 2.5 + 12);
+      if (this.isCorpse) {
+        ctx.fillText(`Meat: ${Math.floor(this.flesh)}`, 0, -this.radius * 2.5);
+      } else {
+        ctx.fillText(Math.floor(this.hitPoints), 0, -this.radius * 2.5);
+        ctx.fillText(
+          `Energy: ${Math.floor(this.energy)}`,
+          0,
+          -this.radius * 2.5 + 14
+        );
+        ctx.fillText(this.currentState, 0, this.radius * 2.5 + 12);
+      }
     }
 
     ctx.restore();

@@ -1,24 +1,23 @@
 import { c } from "./constants.js";
-import { Lion } from "./agents/lion.js";
-import { Gazelle } from "./agents/gazelle.js";
 import { BloodParticle } from "./effects/blood.js";
-import { FoodSystem } from "./world/food_system.js";
 import { camera, initCamera, screenToWorld, getViewBounds } from "./camera.js";
-import { generateWater, drawWater, randomLandPoint } from "./world/water.js";
+import { generateWater, drawWater } from "./world/water.js";
+import { generateGrass, updateGrass, drawGrass, grassFullness } from "./world/grass.js";
+import { spawnAnimals } from "./agents/spawn.js";
+import { Population } from "./agents/population.js";
+import { isInView } from "./utils/canvas.js";
 import { generateVillages, drawVillageGround, drawVillageBuildings } from "./world/village.js";
 import { generateTrees, drawTrees } from "./world/trees.js";
 import { drawGround } from "./world/biomes.js";
 import { drawShadows } from "./world/shadows.js";
 import { updateDayNight, getSun, drawLighting, getClockText } from "./world/daynight.js";
-import { initUIListeners, showEditor, showZoneEditor } from "./ui.js";
+import { initUIListeners, showEditor } from "./ui.js";
 
 const canvas = document.getElementById("simCanvas");
 const ctx = canvas.getContext("2d");
 
-const foodSystem = new FoodSystem();
-
 let particles = [];
-let agents = [];
+const population = new Population(); // living animals, corpses and the lookup grid
 let selectedAgent = null;
 
 const jumpSound = new Audio("sounds/jump.mp3");
@@ -35,34 +34,27 @@ function init() {
   camera.y = c.WORLD_HEIGHT / 2;
   camera.zoom = 0.1;
 
-  // Order matters: villages avoid water, trees avoid both
+  // Order matters: villages avoid water, grass depends on both, trees avoid all three
   generateWater();
   generateVillages();
+  generateGrass();
   generateTrees();
   // bgMusic.play();
 
   particles = [];
-  agents = [];
-
-  for (let i = 0; i < 40; i++) {
-    const p = randomLandPoint();
-    agents.push(new Lion(p.x, p.y));
-  }
-
-  for (let i = 0; i < 300; i++) {
-    const p = randomLandPoint();
-    agents.push(new Gazelle(p.x, p.y));
-  }
+  population.reset(spawnAnimals());
 }
 
 // One fixed simulation step. Speed is changed by running more or fewer
 // steps per frame (see gameLoop), never by changing the step size.
 function update() {
   updateDayNight();
-  foodSystem.update();
+  updateGrass();
 
-  agents.forEach((agent) => {
-    agent.update(foodSystem.foods, agents);
+  population.beginStep();
+
+  for (const agent of population.living) {
+    agent.update(population);
 
     if (agent.didGetHit) {
       for (let i = 0; i < 3; i++) {
@@ -95,21 +87,25 @@ function update() {
       agent.hitPoints -= 0.03;
     }
 
-    if (agent.energy >= 60 && !agent.isDead && agent.energy <= 120) {
-      agent.hitPoints += 0.01;
+    // Well-fed animals slowly heal, up to a full set of hit points
+    if (agent.energy >= 60 && !agent.isDead) {
+      agent.hitPoints = Math.min(c.MAX_HIT_POINTS, agent.hitPoints + c.HP_REGEN_RATE);
     }
-  });
+  }
+
+  // Bodies rot away, and eventually vanish
+  for (const body of population.corpses) body.update(population);
+
+  // The newly dead move to the corpse list, and bodies that have rotted away are dropped
+  population.endStep();
+  if (selectedAgent?.isGone) {
+    selectedAgent = null;
+    document.getElementById("editor-panel").style.display = "none";
+  }
 
   particles.forEach((p) => p.update());
   particles = particles.filter((p) => p.life > 0);
 
-  //remove your dead
-  // agents = agents.filter((agent) => !agent.isDead);
-
-  // if (selectedAgent?.isDead) {
-  //   selectedAgent = null;
-  //   document.getElementById("editor-panel").style.display = "none";
-  // }
 }
 
 function draw() {
@@ -125,6 +121,7 @@ function draw() {
   const sun = getSun();
 
   drawGround(ctx, view);
+  drawGrass(ctx, view);
   drawWater(ctx, view);
   drawVillageGround(ctx, view);
   drawShadows(ctx, view, sun);
@@ -134,11 +131,16 @@ function draw() {
   particles.forEach((p) => {
     if (p.isPool) p.draw(ctx);
   });
-  foodSystem.draw(ctx);
-  agents.forEach((agent) => {
-    if (!agent || !agent.dna) return;
-    agent.draw(ctx, agent === selectedAgent);
-  });
+  // Bodies first so living animals draw on top. Anything off-screen is skipped.
+  const margin = 120;
+  for (const body of population.corpses) {
+    if (!isInView(view, body.pos.x, body.pos.y, margin)) continue;
+    body.draw(ctx, body === selectedAgent, camera.zoom);
+  }
+  for (const agent of population.living) {
+    if (!isInView(view, agent.pos.x, agent.pos.y, margin)) continue;
+    agent.draw(ctx, agent === selectedAgent, camera.zoom);
+  }
   particles.forEach((p) => {
     if (!p.isPool) p.draw(ctx);
   });
@@ -148,9 +150,16 @@ function draw() {
   drawLighting(ctx, canvas, sun);
 }
 
+let hudFrame = 0;
+
 function updateHud() {
-  document.getElementById("pop-count").textContent = agents.filter((a) => !a.isDead).length;
   document.getElementById("clock").textContent = getClockText();
+
+  // The grass total loops over every cell, so refresh the numbers a couple of
+  // times a second rather than every frame
+  if (hudFrame++ % 30 !== 0) return;
+  document.getElementById("pop-count").textContent = population.living.length;
+  document.getElementById("grass-pct").textContent = Math.round(grassFullness() * 100) + "%";
 }
 
 // Simulation speed: c.TIME_SCALE steps per frame (0 = paused, 1 = normal,
@@ -190,10 +199,8 @@ window.addEventListener("click", (e) => {
 
   const { x: worldX, y: worldY } = screenToWorld(mouseX, mouseY, canvas);
 
-  selectedAgent = agents.find((a) => {
-    const dist = Math.sqrt((a.pos.x - worldX) ** 2 + (a.pos.y - worldY) ** 2);
-    return dist < a.radius * 2;
-  });
+  const clicked = (a) => Math.hypot(a.pos.x - worldX, a.pos.y - worldY) < a.radius * 2;
+  selectedAgent = population.living.find(clicked) ?? population.corpses.find(clicked);
 
   if (selectedAgent) {
     showEditor(selectedAgent);
@@ -201,20 +208,6 @@ window.addEventListener("click", (e) => {
     return;
   }
 
-  const clickedZone = foodSystem.zones.find((zone) => {
-    return (
-      worldX >= zone.x &&
-      worldX <= zone.x + zone.w &&
-      worldY >= zone.y &&
-      worldY <= zone.y + zone.h
-    );
-  });
-
-  if (clickedZone) {
-    selectedAgent = null;
-    showZoneEditor(clickedZone);
-    return;
-  }
 });
 
 document.getElementById("close-editor").addEventListener("click", () => {

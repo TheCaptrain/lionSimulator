@@ -11,7 +11,6 @@
 - Global tunables live in `constants.js` as the exported object `c` (world size, `SIM_SPEED`, `DEBUG_MODE`, timing values).
 - Simulation uses a fixed step. `c.SIM_SPEED` is the per-step size (do not change it to change speed) and time-dependent logic multiplies by it. Speed is `c.TIME_SCALE`, the number of steps `main.js` runs per frame (0 = paused), limited by a per-frame time budget.
 - Trait definitions (min, max, step, label) live in `DNA_BLUEPRINT` (`src/agents/dna.js`). The DNA editor UI builds its sliders from them. Add new traits there.
-- Zone editor ranges live in `ZONE_BLUEPRINT` (`src/world/food_system.js`).
 - Species subclass `Agent` (`src/agents/lion.js`, `src/agents/gazelle.js`). Offspring are created with `new this.constructor(...)`.
 - Code style is 2-space indent in newer files, double quotes, and `_prefix` for private methods.
 - Some DNA keys are read with fallbacks between snake_case and camelCase (e.g. `max_speed` / `maxSpeed`, `kin_recogn` / `kinRecognition`). Check the actual DNA key names before relying on a trait.

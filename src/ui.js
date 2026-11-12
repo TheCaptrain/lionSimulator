@@ -1,6 +1,6 @@
 import { c } from "./constants.js";
 import * as DNA from "./agents/dna.js";
-import { ZONE_BLUEPRINT } from "./world/food_system.js";
+
 
 export function initUIListeners() {
   document.getElementById("close-editor").onclick = () => {
@@ -51,28 +51,6 @@ export function showEditor(agent) {
       } else if (key === "vision") {
         agent.vision_range = val;
       }
-    };
-    container.appendChild(wrapper);
-  }
-  document.getElementById("editor-panel").style.display = "block";
-}
-
-export function showZoneEditor(zone) {
-  const container = document.getElementById("dynamic-sliders");
-  container.innerHTML = `<h3>Editing: ${zone.label}</h3>`;
-
-  for (const key in ZONE_BLUEPRINT) {
-    const config = ZONE_BLUEPRINT[key];
-    const value = zone[key];
-
-    const wrapper = document.createElement("div");
-    wrapper.innerHTML = `<label>${config.label}: <span id="val-${key}">${value}</span></label><input type="range" min="${config.min}" max="${config.max}" step="${config.step}" value="${value}" style="width:100%">`;
-
-    const input = wrapper.querySelector("input");
-    input.oninput = (e) => {
-      const val = parseFloat(e.target.value);
-      zone[key] = val;
-      document.getElementById(`val-${key}`).innerText = val;
     };
     container.appendChild(wrapper);
   }

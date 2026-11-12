@@ -1,5 +1,11 @@
 import { Agent } from "./agent.js";
 
+const FLEE_HERD_BOOST = 2.5; // a herd under threat sticks together much harder
+const ALARM_RUN_DISTANCE = 300; // how far ahead to aim when following a herdmate's alarm
+// How long a gazelle that has seen a lion keeps raising the alarm. Only gazelles
+// that saw a lion themselves raise it, so panic cannot feed on itself and last forever.
+const ALARM_MEMORY_STEPS = 120;
+
 export class Gazelle extends Agent {
   constructor(x, y, dna = null) {
     super(x, y, dna);
@@ -9,6 +15,18 @@ export class Gazelle extends Agent {
 
     this.radius = 10;
     // this.max_speed = 3.6;
+
+    this.homeBase = 900;
+    this.sawThreatTimer = 0; // steps left that this gazelle counts as having just seen a lion
+
+    // Gazelles stay close and move together: strong pull in, strong alignment
+    this.herdProfile = {
+      range: 400,
+      cohesion: 1.6,
+      alignment: 1.2,
+      comfortBase: 40,
+      hungerSplit: false,
+    };
     this.legCycle = Math.random() * Math.PI * 2;
 
     // Cache HSL strings to avoid runtime string allocations
@@ -23,26 +41,54 @@ export class Gazelle extends Agent {
     };
   }
 
-  _checkFlee(agents) {
-    const nearbyLions = agents.filter(
-      (a) => a.role === "predator" && !a.isDead
-    );
+  update(world) {
+    if (this.sawThreatTimer > 0) this.sawThreatTimer--;
+    super.update(world);
+  }
 
-    for (const lion of nearbyLions) {
-      const dx = lion.pos.x - this.pos.x;
-      const dy = lion.pos.y - this.pos.y;
+  // Run from the nearest lion, as a herd. A gazelle that cannot see a lion
+  // still bolts if a herdmate of a similar colour has just seen one (alarm spreads).
+  _checkFlee(world) {
+    let closestLion = null;
+    let closestDistSq = this.visionRange ** 2;
+
+    for (const a of world.predators) {
+      if (a.isDead) continue;
+      const dx = a.pos.x - this.pos.x;
+      const dy = a.pos.y - this.pos.y;
       const distSq = dx * dx + dy * dy;
-
-      if (distSq < this.vision_range ** 2) {
-        const escapeVector = {
-          x: this.pos.x - dx,
-          y: this.pos.y - dy,
-        };
-        this.targetPosition = escapeVector;
-        this._seek(escapeVector);
-        return true;
+      if (distSq < closestDistSq) {
+        closestDistSq = distSq;
+        closestLion = a;
       }
     }
+
+    if (closestLion) {
+      this.sawThreatTimer = ALARM_MEMORY_STEPS;
+      const escapeVector = {
+        x: this.pos.x - (closestLion.pos.x - this.pos.x),
+        y: this.pos.y - (closestLion.pos.y - this.pos.y),
+      };
+      this.targetPosition = escapeVector;
+      this._seek(escapeVector);
+      this._applyHerdForces(world, FLEE_HERD_BOOST);
+      return true;
+    }
+
+    this._updateHerdCache(world);
+    if (this._herdIsAlarmed()) {
+      // Run the way the alarmed herdmate is running
+      const mate = this._herd.alarmMate;
+      const escapeVector = {
+        x: this.pos.x + Math.cos(mate.heading) * ALARM_RUN_DISTANCE,
+        y: this.pos.y + Math.sin(mate.heading) * ALARM_RUN_DISTANCE,
+      };
+      this.targetPosition = escapeVector;
+      this._seek(escapeVector);
+      this._applyHerdForces(world, FLEE_HERD_BOOST);
+      return true;
+    }
+
     return false;
   }
 

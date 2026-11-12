@@ -12,7 +12,9 @@ export const DNA_BLUEPRINT = {
     aggression:         { min: 0,   max: 1,    step: 0.01,label: "Aggression" },
     fleefullness:       { min: 0,   max: 1,    step: 0.01,label: "Fleefullness" },
     vision_range:       { min: 0,   max: 1000, step: 5,   label: "Sensing Range" },
-    metabolism:         { min: 0.5,   max: 1.5, step: 0.01,   label: "metabolism" }
+    metabolism:         { min: 0.5,   max: 1.5, step: 0.01,   label: "metabolism" },
+    wanderlust:         { min: 0.3, max: 1.6,  step: 0.1, label: "Wanderlust (Home Range)" },
+    sociability:        { min: 0,   max: 1,    step: 0.01,label: "Sociability (Herding)" }
 };
 
 const getRandomStepValue = (trait) => {
